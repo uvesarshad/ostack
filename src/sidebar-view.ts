@@ -11,6 +11,7 @@ type Screen = { name: "sessions" } | { name: "chat"; sessionId: string };
 export class OgstackSidebarView extends ItemView {
   private screen: Screen = { name: "sessions" };
   private streamingContent = "";
+  private storeUnsubscribe: (() => void) | null = null;
 
   constructor(leaf: WorkspaceLeaf, private plugin: GStackPlugin) {
     super(leaf);
@@ -20,7 +21,14 @@ export class OgstackSidebarView extends ItemView {
   getDisplayText(): string { return "ogstack"; }
   getIcon(): string { return "wand-2"; }
 
-  async onOpen(): Promise<void> { await this.render(); }
+  async onOpen(): Promise<void> {
+    this.storeUnsubscribe = this.plugin.chatStore.onChange(() => {
+      // Avoid re-rendering during in-flight chat input — only refresh when idle
+      if (this.streamingContent) return;
+      this.render();
+    });
+    await this.render();
+  }
 
   async render(): Promise<void> {
     const root = this.containerEl.children[1] as HTMLElement;
@@ -418,7 +426,10 @@ export class OgstackSidebarView extends ItemView {
     await this.render();
   }
 
-  async onClose(): Promise<void> { /* nothing */ }
+  async onClose(): Promise<void> {
+    this.storeUnsubscribe?.();
+    this.storeUnsubscribe = null;
+  }
 }
 
 function relativeTime(ts: number): string {

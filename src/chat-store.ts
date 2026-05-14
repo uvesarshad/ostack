@@ -17,6 +17,7 @@ export interface ChatSession {
 
 export class ChatStore {
   private sessions: ChatSession[] = [];
+  private listeners: Set<() => void> = new Set();
 
   constructor(private plugin: GStackPlugin) {}
 
@@ -25,10 +26,22 @@ export class ChatStore {
     this.sessions = data?.chatSessions ?? [];
   }
 
+  onChange(fn: () => void): () => void {
+    this.listeners.add(fn);
+    return () => { this.listeners.delete(fn); };
+  }
+
+  private notify(): void {
+    for (const l of this.listeners) {
+      try { l(); } catch { /* swallow listener errors */ }
+    }
+  }
+
   private async persist(): Promise<void> {
     const current = ((await this.plugin.loadData()) as Record<string, unknown> | null) ?? {};
     current.chatSessions = this.sessions;
     await this.plugin.saveData(current);
+    this.notify();
   }
 
   getSessions(): ChatSession[] {
@@ -78,6 +91,14 @@ export class ChatStore {
       session.updatedAt = Date.now();
       await this.persist();
     }
+  }
+
+  async replaceSessionMessages(sessionId: string, messages: ChatMessage[]): Promise<void> {
+    const session = this.sessions.find((s) => s.id === sessionId);
+    if (!session) return;
+    session.messages = messages;
+    session.updatedAt = Date.now();
+    await this.persist();
   }
 
   async deleteSession(id: string): Promise<void> {

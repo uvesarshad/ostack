@@ -1,37 +1,31 @@
-import { App, Editor, MarkdownRenderer, MarkdownView, Component, TFile } from "obsidian";
+import { App, MarkdownRenderer, MarkdownView, Component, TFile } from "obsidian";
 import type { Skill } from "./skill-loader";
 import type { GStackSettings } from "./settings";
 import type { ProgressReporter } from "./floating-input";
 import { getProvider, LLMMessage } from "./providers/provider-interface";
 import { buildVaultContext, formatVaultContext } from "./context-builder";
 import { applyScoutResults, scoutContext } from "./context-scout";
+import type { ChatStore, ChatSession, ChatMessage } from "./chat-store";
 
 // ── Types ────────────────────────────────────────────────────────────
 
 type BarState = "idle" | "streaming" | "waiting-ask" | "done" | "error";
 
-interface BarMessage {
-  id: string;
-  role: "user" | "assistant" | "system-status";
-  content: string;
-  asks?: string[];   // pending <ASK> questions extracted from assistant message
-  rendered?: boolean;
-}
-
 export interface BarChatConfig {
   app: App;
   settings: GStackSettings;
   getSkills: () => Map<string, Skill>;
+  chatStore: ChatStore;
   onStreamingChange?: (streaming: boolean, label: string) => void;
 }
 
 // ── Constants ────────────────────────────────────────────────────────
 
 const ASK_PATTERN = /<ASK>([\s\S]*?)<\/ASK>/g;
-
 const ESTIMATED_TOKENS_PER_CHAR = 0.25;
+const SCRATCH_NOTE_PATH = "__ogstack_scratch__";
 
-// ── BarChat: the new floating conversation surface ───────────────────
+// ── BarChat: floating conversation surface ───────────────────────────
 
 export class BarChat extends Component implements ProgressReporter {
   // DOM
@@ -44,12 +38,15 @@ export class BarChat extends Component implements ProgressReporter {
   private stopBtn: HTMLButtonElement;
   private suggestPopup: HTMLElement;
   private toolbar: HTMLElement;
+  private titleEl: HTMLElement;
 
-  // State
+  // Session-driven state
+  private currentSessionId: string | null = null;
+
+  // Streaming state (transient, not persisted yet)
   private state: BarState = "idle";
-  private messages: BarMessage[] = [];
-  private activeAssistantEl: HTMLElement | null = null;
-  private activeAssistantContent = "";
+  private streamingAssistantEl: HTMLElement | null = null;
+  private streamingContent = "";
   private currentSkill: Skill | null = null;
   private currentSystemPrompt = "";
   private abortController: AbortController | null = null;
@@ -60,37 +57,33 @@ export class BarChat extends Component implements ProgressReporter {
   private triggerPos = -1;
 
   private config: BarChatConfig;
+  private storeUnsubscribe: (() => void) | null = null;
+  private activeLeafUnregister: (() => void) | null = null;
 
   constructor(config: BarChatConfig) {
     super();
     this.config = config;
 
-    // ── Outer container (fixed, centred) ─────────────────────────
     this.container = document.createElement("div");
     this.container.className = "gstack-bar2-container";
 
-    // Suggestions popup (above the card)
     this.suggestPopup = document.createElement("div");
     this.suggestPopup.className = "gstack-bar2-popup";
     this.suggestPopup.style.display = "none";
     this.container.appendChild(this.suggestPopup);
 
-    // The card
     this.card = document.createElement("div");
     this.card.className = "gstack-bar2-card";
 
-    // Toolbar (hidden when no conversation)
     this.toolbar = document.createElement("div");
     this.toolbar.className = "gstack-bar2-toolbar";
     this.buildToolbar();
     this.card.appendChild(this.toolbar);
 
-    // Conversation pane
     this.conversationEl = document.createElement("div");
     this.conversationEl.className = "gstack-bar2-conversation";
     this.card.appendChild(this.conversationEl);
 
-    // Input row
     this.inputRow = document.createElement("div");
     this.inputRow.className = "gstack-bar2-input-row";
     this.buildInputRow();
@@ -99,6 +92,16 @@ export class BarChat extends Component implements ProgressReporter {
     this.container.appendChild(this.card);
     document.body.appendChild(this.container);
 
+    // Subscribe to store changes (external sidebar edits)
+    this.storeUnsubscribe = this.config.chatStore.onChange(() => this.onStoreChange());
+
+    // Subscribe to active-leaf changes so the bar follows the note context
+    const ref = this.config.app.workspace.on("active-leaf-change", () => this.onActiveLeafChange());
+    this.activeLeafUnregister = () => {
+      // @ts-ignore — Obsidian's offref uses a hidden interface
+      this.config.app.workspace.offref(ref);
+    };
+
     this.applyState();
   }
 
@@ -106,6 +109,9 @@ export class BarChat extends Component implements ProgressReporter {
 
   show(): void {
     this.container.classList.add("visible");
+    // Lazily attach to active note's session when first shown
+    if (!this.currentSessionId) this.attachToActiveNote();
+    else this.renderConversation();
   }
 
   hide(): void {
@@ -122,31 +128,25 @@ export class BarChat extends Component implements ProgressReporter {
     return this.container.classList.contains("visible");
   }
 
-  hasActiveConversation(): boolean {
-    return this.messages.length > 0;
-  }
-
   updateSettings(settings: GStackSettings): void {
     this.config.settings = settings;
   }
 
   destroy(): void {
     this.abortController?.abort();
+    this.storeUnsubscribe?.();
+    this.activeLeafUnregister?.();
     this.container.remove();
   }
 
-  // ── ProgressReporter interface (back-compat for skill-runner) ────
+  // ── ProgressReporter (back-compat) ───────────────────────────────
 
   setRunning(message: string): void {
     this.show();
     this.appendStatusMessage(message);
   }
 
-  setDone(_message?: string): void {
-    // Streaming completion is handled inside runSkillInBar; this is unused there.
-    // For legacy callers, just ensure visible.
-    this.show();
-  }
+  setDone(_message?: string): void { this.show(); }
 
   setError(message: string): void {
     this.show();
@@ -154,13 +154,12 @@ export class BarChat extends Component implements ProgressReporter {
     this.setState("error");
   }
 
-  // ── Skill execution entry point ──────────────────────────────────
+  // ── Skill execution ──────────────────────────────────────────────
 
   async runSkill(skill: Skill): Promise<void> {
     this.show();
     this.currentSkill = skill;
 
-    // Build context & system prompt (similar to skill-runner)
     const activeFile = this.config.app.workspace.getActiveFile();
     if (!activeFile) {
       this.appendStatusMessage("Open a note first.", true);
@@ -172,7 +171,9 @@ export class BarChat extends Component implements ProgressReporter {
       return;
     }
 
-    // Show "preparing" status
+    // Ensure we have a session for this note
+    await this.ensureSession(activeFile);
+
     const prepEl = this.appendStatusMessage(`Preparing /${skill.name}…`);
 
     let systemPrompt: string;
@@ -199,7 +200,6 @@ export class BarChat extends Component implements ProgressReporter {
       const vaultStr = formatVaultContext(finalCtx);
       systemPrompt = skill.systemPrompt.replace("{{VAULT_CONTEXT}}", vaultStr);
 
-      // For interactive skills, inject the ASK protocol instructions
       if (skill.mode === "interactive") {
         systemPrompt += `\n\n<!-- OGSTACK PROTOCOL --> If you need clarification before producing the final answer, write your reasoning briefly, then wrap each clarifying question in <ASK>question text</ASK> tags. The user will answer and you'll continue. Do not use ASK tags unless you need clarification.`;
       }
@@ -208,163 +208,185 @@ export class BarChat extends Component implements ProgressReporter {
       return;
     }
 
-    // Replace the prep status with a fresh assistant bubble for streaming
     prepEl.remove();
     this.currentSystemPrompt = systemPrompt;
 
-    // First turn: empty user message (the skill's system prompt drives the response)
-    await this.streamAssistantTurn([]);
+    // Record a "user" turn so it's clear what triggered this
+    await this.config.chatStore.addMessage(this.currentSessionId!, "user", `/${skill.name}`);
+    this.renderConversation();
 
-    // After streaming, if auto_insert is set and we have content (no asks), insert it
+    await this.streamAssistantTurn();
+
     if (skill.autoInsert && this.state === "done") {
-      const lastAssistant = this.findLastAssistant();
-      if (lastAssistant && lastAssistant.asks?.length === 0) {
-        this.insertIntoNote(lastAssistant.content, "cursor");
+      const session = this.currentSession();
+      const lastMsg = session?.messages[session.messages.length - 1];
+      if (lastMsg?.role === "assistant" && extractAsks(lastMsg.content).length === 0) {
+        await this.insertIntoNote(stripAsks(lastMsg.content), "cursor");
       }
     }
   }
 
+  // ── Session attach / switch ──────────────────────────────────────
+
+  private async attachToActiveNote(): Promise<void> {
+    const activeFile = this.config.app.workspace.getActiveFile();
+    await this.ensureSession(activeFile);
+    this.renderConversation();
+  }
+
+  private async ensureSession(activeFile: TFile | null): Promise<void> {
+    const notePath = activeFile?.path ?? SCRATCH_NOTE_PATH;
+    const noteTitle = activeFile?.basename ?? "Scratch";
+
+    // Re-use the most recent session for this note, or create one
+    const existing = this.config.chatStore.getSessionsForNote(notePath)[0];
+    if (existing) {
+      this.currentSessionId = existing.id;
+    } else {
+      const created = await this.config.chatStore.createSession(notePath, noteTitle);
+      this.currentSessionId = created.id;
+    }
+    this.updateTitle();
+  }
+
+  private async onActiveLeafChange(): Promise<void> {
+    if (!this.isVisible()) return;
+    if (this.state === "streaming" || this.state === "waiting-ask") return; // don't switch mid-turn
+
+    const activeFile = this.config.app.workspace.getActiveFile();
+    const notePath = activeFile?.path ?? SCRATCH_NOTE_PATH;
+    const current = this.currentSession();
+    if (current && current.notePath === notePath) return;
+
+    await this.ensureSession(activeFile);
+    this.renderConversation();
+  }
+
+  private onStoreChange(): void {
+    // Only re-render if idle/done and we're showing the affected session
+    if (this.state === "streaming" || this.state === "waiting-ask") return;
+    this.renderConversation();
+  }
+
+  private currentSession(): ChatSession | undefined {
+    if (!this.currentSessionId) return undefined;
+    return this.config.chatStore.getSession(this.currentSessionId);
+  }
+
   // ── Streaming loop ───────────────────────────────────────────────
 
-  private async streamAssistantTurn(extraUserMessages: LLMMessage[]): Promise<void> {
+  private async streamAssistantTurn(): Promise<void> {
+    if (!this.currentSessionId) return;
     this.setState("streaming");
-    this.activeAssistantContent = "";
+    this.streamingContent = "";
 
-    // Create the assistant message bubble
-    const msgId = `msg-${Date.now()}`;
-    const msg: BarMessage = { id: msgId, role: "assistant", content: "" };
-    this.messages.push(msg);
-    this.activeAssistantEl = this.renderMessage(msg);
+    // Create a live (unsaved) assistant bubble appended to the conversation
+    this.streamingAssistantEl = this.conversationEl.createDiv({ cls: "gstack-bar2-msg gstack-bar2-msg-assistant gstack-bar2-msg-streaming" });
+    this.renderStreamingText(this.streamingAssistantEl, "");
     this.scrollToBottom();
 
-    // Build messages from history
-    const history: LLMMessage[] = this.buildLLMHistory(extraUserMessages);
+    const history = this.buildLLMHistory();
 
     const provider = getProvider(this.config.settings);
     this.abortController = new AbortController();
 
     try {
       const stream = provider.stream({
-        systemPrompt: this.currentSystemPrompt,
+        systemPrompt: this.currentSystemPrompt || (await this.buildFreeChatSystemPrompt()),
         messages: history,
       });
 
       for await (const token of stream) {
         if (this.abortController.signal.aborted) break;
-        this.activeAssistantContent += token;
-        this.renderStreamingText(this.activeAssistantEl, this.activeAssistantContent);
+        this.streamingContent += token;
+        if (this.streamingAssistantEl) {
+          this.renderStreamingText(this.streamingAssistantEl, this.streamingContent);
+        }
         this.scrollToBottom();
       }
 
-      // Stream done — finalize
-      msg.content = this.activeAssistantContent;
-      await this.finalizeAssistantMessage(msg);
+      await this.finalizeAssistantTurn();
     } catch (err: unknown) {
       const e = err as { status?: number; body?: string; message?: string };
       const errText = formatProviderError(e, this.config.settings.provider);
-      msg.content = errText;
-      if (this.activeAssistantEl) this.activeAssistantEl.textContent = errText;
+      if (this.streamingAssistantEl) {
+        this.streamingAssistantEl.empty();
+        this.streamingAssistantEl.createSpan({ text: errText, cls: "gstack-bar2-msg-error" });
+      }
       this.setState("error");
-      return;
     } finally {
       this.abortController = null;
     }
   }
 
-  private async finalizeAssistantMessage(msg: BarMessage): Promise<void> {
-    // Detect <ASK> blocks
-    const asks = extractAsks(msg.content);
-    msg.asks = asks;
+  private async finalizeAssistantTurn(): Promise<void> {
+    if (!this.currentSessionId) return;
+    const content = this.streamingContent;
+    this.streamingContent = "";
+    this.streamingAssistantEl = null;
 
-    if (this.activeAssistantEl) {
-      // Render content stripped of ASK tags as markdown
-      const visibleContent = msg.content.replace(ASK_PATTERN, "").trim();
+    // Persist the assistant message (full content including any <ASK> tags)
+    await this.config.chatStore.addMessage(this.currentSessionId, "assistant", content);
 
-      // Replace text node with rendered markdown + action buttons
-      this.activeAssistantEl.empty();
-      const contentEl = this.activeAssistantEl.createDiv({ cls: "gstack-bar2-msg-content" });
-      if (visibleContent) {
-        await MarkdownRenderer.render(this.config.app, visibleContent, contentEl, "", this);
-      }
+    // Detect ASKs from the final content
+    const asks = extractAsks(content);
+    this.setState(asks.length > 0 ? "waiting-ask" : "done");
 
-      // Action buttons (only if there's content beyond ASKs)
-      if (visibleContent) {
-        this.renderActionButtons(this.activeAssistantEl, visibleContent);
-      }
+    // Re-render to pick up the persisted message + render ASK UI if needed
+    await this.renderConversation();
+    this.maybePromptCompaction();
+  }
 
-      // ASK questions UI
-      if (asks.length > 0) {
-        this.renderAskUI(this.activeAssistantEl, asks);
-        this.setState("waiting-ask");
-      } else {
-        this.setState("done");
-      }
-    } else {
-      this.setState(asks.length > 0 ? "waiting-ask" : "done");
+  // ── Render ───────────────────────────────────────────────────────
+
+  private async renderConversation(): Promise<void> {
+    const session = this.currentSession();
+    this.conversationEl.empty();
+
+    if (!session || session.messages.length === 0) {
+      this.applyState();
+      return;
     }
 
-    this.activeAssistantEl = null;
-    this.maybePromptCompaction();
+    for (let i = 0; i < session.messages.length; i++) {
+      const msg = session.messages[i];
+      const isLast = i === session.messages.length - 1;
+      await this.renderStoredMessage(msg, isLast);
+    }
+
+    this.applyState();
     this.scrollToBottom();
   }
 
-  // ── DOM rendering ────────────────────────────────────────────────
-
-  private buildToolbar(): void {
-    const compactBtn = this.toolbar.createEl("button", { cls: "gstack-bar2-toolbar-btn", text: "Compact ↑" });
-    compactBtn.title = "Summarize older messages to save tokens";
-    compactBtn.addEventListener("click", () => this.compactConversation());
-
-    const clearBtn = this.toolbar.createEl("button", { cls: "gstack-bar2-toolbar-btn", text: "Clear" });
-    clearBtn.addEventListener("click", () => this.clearConversation());
-
-    const closeBtn = this.toolbar.createEl("button", { cls: "gstack-bar2-toolbar-btn gstack-bar2-toolbar-close", text: "×" });
-    closeBtn.title = "Hide";
-    closeBtn.addEventListener("click", () => this.hide());
-  }
-
-  private buildInputRow(): void {
-    this.inputEl = this.inputRow.createEl("textarea", { cls: "gstack-bar2-input" }) as HTMLTextAreaElement;
-    this.inputEl.placeholder = "Ask, or /skill, or @[[note]]…";
-    this.inputEl.rows = 1;
-    this.inputEl.addEventListener("input", () => {
-      this.autoResize();
-      this.handleInputForSuggest();
-    });
-    this.inputEl.addEventListener("keydown", (e) => this.handleKeydown(e));
-
-    this.sendBtn = this.inputRow.createEl("button", { cls: "gstack-bar2-send", text: "↑" }) as HTMLButtonElement;
-    this.sendBtn.title = "Send (Enter)";
-    this.sendBtn.addEventListener("click", () => this.handleSend());
-
-    this.stopBtn = this.inputRow.createEl("button", { cls: "gstack-bar2-stop", text: "■" }) as HTMLButtonElement;
-    this.stopBtn.title = "Stop";
-    this.stopBtn.style.display = "none";
-    this.stopBtn.addEventListener("click", () => this.stopStream());
-  }
-
-  private autoResize(): void {
-    this.inputEl.style.height = "auto";
-    this.inputEl.style.height = Math.min(this.inputEl.scrollHeight, 120) + "px";
-  }
-
-  private renderMessage(msg: BarMessage): HTMLElement {
-    const el = this.conversationEl.createDiv({ cls: `gstack-bar2-msg gstack-bar2-msg-${msg.role}` });
+  private async renderStoredMessage(msg: ChatMessage, isLast: boolean): Promise<void> {
     if (msg.role === "user") {
+      const el = this.conversationEl.createDiv({ cls: "gstack-bar2-msg gstack-bar2-msg-user" });
       el.textContent = msg.content;
-    } else if (msg.role === "system-status") {
-      el.textContent = msg.content;
-    } else if (msg.role === "assistant") {
-      // During streaming, we use plain text. Markdown is rendered in finalize().
-      el.textContent = msg.content;
+      return;
     }
-    return el;
+
+    // Assistant message
+    const el = this.conversationEl.createDiv({ cls: "gstack-bar2-msg gstack-bar2-msg-assistant" });
+    const asks = extractAsks(msg.content);
+    const visible = stripAsks(msg.content);
+
+    const contentEl = el.createDiv({ cls: "gstack-bar2-msg-content" });
+    if (visible) {
+      await MarkdownRenderer.render(this.config.app, visible, contentEl, "", this);
+    }
+
+    if (visible) {
+      this.renderActionButtons(el, visible);
+    }
+
+    // Render ASK UI only on the most recent assistant message, and only if state is waiting-ask
+    if (isLast && asks.length > 0 && this.state === "waiting-ask") {
+      this.renderAskUI(el, asks);
+    }
   }
 
   private renderStreamingText(el: HTMLElement, content: string): void {
-    // Show the streaming text live with a blinking cursor at end
-    // Strip ASK tags from visible streaming text
-    const visible = content.replace(ASK_PATTERN, "").trim();
+    const visible = stripAsks(content);
     el.empty();
     el.createSpan({ text: visible });
     el.createSpan({ cls: "gstack-bar2-cursor", text: "▌" });
@@ -410,25 +432,100 @@ export class BarChat extends Component implements ProgressReporter {
     submitBtn.addEventListener("click", async () => {
       const answers = inputs.map((i, idx) => `**Q: ${asks[idx]}**\nA: ${i.value.trim() || "(no answer)"}`);
       submitBtn.disabled = true;
-      // Lock the ASK UI
       inputs.forEach((i) => { i.disabled = true; });
-      // Add a user message with the answers
-      const userMsg: BarMessage = {
-        id: `msg-${Date.now()}`,
-        role: "user",
-        content: answers.join("\n\n"),
-      };
-      this.messages.push(userMsg);
-      this.renderMessage(userMsg);
-      // Continue the conversation
-      await this.streamAssistantTurn([]);
+
+      if (!this.currentSessionId) return;
+      await this.config.chatStore.addMessage(this.currentSessionId, "user", answers.join("\n\n"));
+      await this.renderConversation();
+      await this.streamAssistantTurn();
     });
 
-    // Focus first input
     setTimeout(() => inputs[0]?.focus(), 50);
   }
 
-  // ── Input handling (send, suggestions) ───────────────────────────
+  // ── Toolbar / input ──────────────────────────────────────────────
+
+  private buildToolbar(): void {
+    this.titleEl = this.toolbar.createDiv({ cls: "gstack-bar2-toolbar-title", text: "ogstack" });
+
+    const newBtn = this.toolbar.createEl("button", { cls: "gstack-bar2-toolbar-btn", text: "+ New chat" });
+    newBtn.title = "Start a new conversation for the active note";
+    newBtn.addEventListener("click", () => this.startNewChat());
+
+    const compactBtn = this.toolbar.createEl("button", { cls: "gstack-bar2-toolbar-btn", text: "Compact ↑" });
+    compactBtn.title = "Summarize older messages to save tokens";
+    compactBtn.addEventListener("click", () => this.compactConversation());
+
+    const openSidebarBtn = this.toolbar.createEl("button", { cls: "gstack-bar2-toolbar-btn", text: "Open in sidebar" });
+    openSidebarBtn.title = "Continue this chat in the right sidebar";
+    openSidebarBtn.addEventListener("click", () => this.openInSidebar());
+
+    const closeBtn = this.toolbar.createEl("button", { cls: "gstack-bar2-toolbar-btn gstack-bar2-toolbar-close", text: "×" });
+    closeBtn.title = "Hide";
+    closeBtn.addEventListener("click", () => this.hide());
+  }
+
+  private updateTitle(): void {
+    const session = this.currentSession();
+    if (!this.titleEl) return;
+    const title = session?.noteTitle ?? "ogstack";
+    this.titleEl.textContent = title === "Scratch" ? "Scratch chat" : title;
+  }
+
+  private async startNewChat(): Promise<void> {
+    if (this.state === "streaming") this.stopStream();
+    const activeFile = this.config.app.workspace.getActiveFile();
+    const notePath = activeFile?.path ?? SCRATCH_NOTE_PATH;
+    const noteTitle = activeFile?.basename ?? "Scratch";
+    const session = await this.config.chatStore.createSession(notePath, noteTitle);
+    this.currentSessionId = session.id;
+    this.currentSkill = null;
+    this.currentSystemPrompt = "";
+    this.setState("idle");
+    this.updateTitle();
+    await this.renderConversation();
+    this.inputEl.focus();
+  }
+
+  private async openInSidebar(): Promise<void> {
+    const session = this.currentSession();
+    if (!session) return;
+    // Try to focus the sidebar view via the plugin's public API
+    const workspace = this.config.app.workspace;
+    // @ts-ignore — sidebar plugin handles its own state
+    const leaf = workspace.getRightLeaf(false);
+    if (!leaf) return;
+    await leaf.setViewState({ type: "ogstack-sidebar", active: true });
+    workspace.revealLeaf(leaf);
+    // The sidebar view will pick up the session via the store; the user can click into it
+  }
+
+  private buildInputRow(): void {
+    this.inputEl = this.inputRow.createEl("textarea", { cls: "gstack-bar2-input" }) as HTMLTextAreaElement;
+    this.inputEl.placeholder = "Ask, /skill, or @[[note]]…";
+    this.inputEl.rows = 1;
+    this.inputEl.addEventListener("input", () => {
+      this.autoResize();
+      this.handleInputForSuggest();
+    });
+    this.inputEl.addEventListener("keydown", (e) => this.handleKeydown(e));
+
+    this.sendBtn = this.inputRow.createEl("button", { cls: "gstack-bar2-send", text: "↑" }) as HTMLButtonElement;
+    this.sendBtn.title = "Send (Enter)";
+    this.sendBtn.addEventListener("click", () => this.handleSend());
+
+    this.stopBtn = this.inputRow.createEl("button", { cls: "gstack-bar2-stop", text: "■" }) as HTMLButtonElement;
+    this.stopBtn.title = "Stop";
+    this.stopBtn.style.display = "none";
+    this.stopBtn.addEventListener("click", () => this.stopStream());
+  }
+
+  private autoResize(): void {
+    this.inputEl.style.height = "auto";
+    this.inputEl.style.height = Math.min(this.inputEl.scrollHeight, 120) + "px";
+  }
+
+  // ── Input → action ───────────────────────────────────────────────
 
   private async handleSend(): Promise<void> {
     const text = this.inputEl.value.trim();
@@ -447,34 +544,28 @@ export class BarChat extends Component implements ProgressReporter {
       }
     }
 
-    // Free-form message
     this.inputEl.value = "";
     this.autoResize();
     this.hideSuggestPopup();
 
-    // If no active conversation, set up a basic system prompt
-    if (this.messages.length === 0) {
+    const activeFile = this.config.app.workspace.getActiveFile();
+    await this.ensureSession(activeFile);
+
+    // Build free-chat system prompt (lazy, only first turn of a fresh session)
+    const session = this.currentSession();
+    if (session && session.messages.length === 0) {
       this.currentSystemPrompt = await this.buildFreeChatSystemPrompt();
     }
 
-    const userMsg: BarMessage = {
-      id: `msg-${Date.now()}`,
-      role: "user",
-      content: text,
-    };
-    this.messages.push(userMsg);
-    this.renderMessage(userMsg);
-    this.scrollToBottom();
-
-    await this.streamAssistantTurn([]);
+    await this.config.chatStore.addMessage(this.currentSessionId!, "user", text);
+    await this.renderConversation();
+    await this.streamAssistantTurn();
   }
 
   private async buildFreeChatSystemPrompt(): Promise<string> {
     const activeFile = this.config.app.workspace.getActiveFile();
     const base = "You are a concise AI assistant embedded in Obsidian. Help the user think through their notes. When listing or formatting, use markdown.";
-
     if (!activeFile) return base + "\n\n(No active note open.)";
-
     try {
       const ctx = await buildVaultContext(this.config.app, activeFile, this.config.settings, 2, Math.min(this.config.settings.maxTokens, 4000));
       if (!ctx) return base;
@@ -485,7 +576,6 @@ export class BarChat extends Component implements ProgressReporter {
   }
 
   private handleKeydown(e: KeyboardEvent): void {
-    // Suggestions navigation
     if (this.filteredEntries.length > 0) {
       if (e.key === "ArrowDown") {
         e.preventDefault();
@@ -506,11 +596,7 @@ export class BarChat extends Component implements ProgressReporter {
           return;
         }
       }
-      if (e.key === "Escape") {
-        e.preventDefault();
-        this.hideSuggestPopup();
-        return;
-      }
+      if (e.key === "Escape") { e.preventDefault(); this.hideSuggestPopup(); return; }
     }
 
     if (e.key === "Enter" && !e.shiftKey) {
@@ -521,12 +607,8 @@ export class BarChat extends Component implements ProgressReporter {
 
     if (e.key === "Escape") {
       e.preventDefault();
-      if (this.state === "streaming") {
-        this.stopStream();
-      } else {
-        this.hide();
-      }
-      return;
+      if (this.state === "streaming") this.stopStream();
+      else this.hide();
     }
   }
 
@@ -534,7 +616,6 @@ export class BarChat extends Component implements ProgressReporter {
     const cursor = this.inputEl.selectionStart ?? 0;
     const text = this.inputEl.value.slice(0, cursor);
 
-    // / trigger (skills)
     const slashMatch = text.match(/(?:^|[\s\n])(\/)([^\s]*)$/);
     if (slashMatch) {
       this.triggerPos = cursor - slashMatch[1].length - slashMatch[2].length;
@@ -547,7 +628,6 @@ export class BarChat extends Component implements ProgressReporter {
       return;
     }
 
-    // @ trigger (notes)
     const atMatch = text.match(/(?:^|[\s\n])@([^\s\n@]*)$/);
     if (atMatch) {
       this.triggerPos = cursor - 1 - atMatch[1].length;
@@ -568,10 +648,7 @@ export class BarChat extends Component implements ProgressReporter {
     this.selectedSuggestIdx = entries.length > 0 ? 0 : -1;
     this.suggestPopup.empty();
 
-    if (entries.length === 0) {
-      this.suggestPopup.style.display = "none";
-      return;
-    }
+    if (entries.length === 0) { this.suggestPopup.style.display = "none"; return; }
 
     this.suggestPopup.style.display = "";
     entries.forEach((entry, i) => {
@@ -615,7 +692,7 @@ export class BarChat extends Component implements ProgressReporter {
     this.selectedSuggestIdx = -1;
   }
 
-  // ── State management ─────────────────────────────────────────────
+  // ── State ────────────────────────────────────────────────────────
 
   private setState(state: BarState): void {
     const wasStreaming = this.state === "streaming";
@@ -635,30 +712,19 @@ export class BarChat extends Component implements ProgressReporter {
     this.sendBtn.style.display = showStop ? "none" : "";
     this.inputEl.disabled = this.state === "streaming";
 
-    const hasConvo = this.messages.length > 0;
-    this.toolbar.style.display = hasConvo ? "" : "none";
-    this.conversationEl.style.display = hasConvo ? "" : "none";
-    if (hasConvo) {
-      this.card.classList.add("has-conversation");
-    } else {
-      this.card.classList.remove("has-conversation");
-    }
+    const session = this.currentSession();
+    const hasConvo = !!session && session.messages.length > 0;
+    // Always show toolbar — New chat / title are useful even on empty session
+    this.toolbar.style.display = "";
+    this.conversationEl.style.display = hasConvo || this.streamingAssistantEl ? "" : "none";
+    if (hasConvo) this.card.classList.add("has-conversation");
+    else this.card.classList.remove("has-conversation");
   }
 
   private stopStream(): void {
-    if (this.abortController) {
-      this.abortController.abort();
-      this.abortController = null;
-    }
+    this.abortController?.abort();
+    this.abortController = null;
     this.setState("done");
-  }
-
-  private clearConversation(): void {
-    this.messages = [];
-    this.conversationEl.empty();
-    this.currentSkill = null;
-    this.currentSystemPrompt = "";
-    this.setState("idle");
   }
 
   // ── Helpers ──────────────────────────────────────────────────────
@@ -679,44 +745,32 @@ export class BarChat extends Component implements ProgressReporter {
     return el;
   }
 
-  private findLastAssistant(): BarMessage | null {
-    for (let i = this.messages.length - 1; i >= 0; i--) {
-      if (this.messages[i].role === "assistant") return this.messages[i];
-    }
-    return null;
-  }
+  private buildLLMHistory(): LLMMessage[] {
+    const session = this.currentSession();
+    if (!session) return [{ role: "user", content: "Begin." }];
 
-  private buildLLMHistory(extra: LLMMessage[]): LLMMessage[] {
-    const history: LLMMessage[] = [];
-    // Skip the very last assistant message if it's the one we're currently building
-    const allMsgs = this.messages.slice(0, -1); // exclude the just-pushed placeholder
-    for (const m of allMsgs) {
-      if (m.role === "system-status") continue;
-      history.push({ role: m.role as "user" | "assistant", content: m.content });
-    }
-    // First-turn skill invocation has no user message — synthesize one
+    const history: LLMMessage[] = session.messages.map((m) => ({ role: m.role, content: m.content }));
+
     if (history.length === 0 || history.every((h) => h.role === "assistant")) {
       history.push({ role: "user", content: "Begin." });
     }
-    return [...history, ...extra];
+    return history;
   }
 
   private async insertIntoNote(content: string, mode: "cursor" | "end"): Promise<void> {
     const view = this.config.app.workspace.getActiveViewOfType(MarkdownView);
     const editor = view?.editor;
     if (!editor) {
-      // No active editor — copy to clipboard as fallback
       await navigator.clipboard.writeText(content);
       return;
     }
 
     if (mode === "cursor") {
-      const cursor = editor.getCursor();
-      editor.replaceRange(content, cursor);
+      editor.replaceRange(content, editor.getCursor());
     } else {
       const lastLine = editor.lastLine();
       const lastLineLen = editor.getLine(lastLine).length;
-      const insert = (editor.getLine(lastLine).length > 0 ? "\n\n" : "") + content;
+      const insert = (lastLineLen > 0 ? "\n\n" : "") + content;
       editor.replaceRange(insert, { line: lastLine, ch: lastLineLen });
     }
   }
@@ -724,8 +778,10 @@ export class BarChat extends Component implements ProgressReporter {
   // ── Compaction ───────────────────────────────────────────────────
 
   private estimateTokens(): number {
+    const session = this.currentSession();
+    if (!session) return 0;
     return Math.floor(
-      this.messages.reduce((sum, m) => sum + m.content.length, 0) * ESTIMATED_TOKENS_PER_CHAR
+      session.messages.reduce((sum, m) => sum + m.content.length, 0) * ESTIMATED_TOKENS_PER_CHAR
     );
   }
 
@@ -746,16 +802,13 @@ export class BarChat extends Component implements ProgressReporter {
   }
 
   private async compactConversation(): Promise<void> {
-    if (this.messages.length < 4) return;
+    const session = this.currentSession();
+    if (!session || session.messages.length < 4) return;
 
-    const toSummarize = this.messages.slice(0, -2); // keep last 2 turns
-    const recent = this.messages.slice(-2);
+    const toSummarize = session.messages.slice(0, -2);
+    const recent = session.messages.slice(-2);
 
-    const text = toSummarize
-      .filter((m) => m.role !== "system-status")
-      .map((m) => `${m.role.toUpperCase()}: ${m.content}`)
-      .join("\n\n");
-
+    const text = toSummarize.map((m) => `${m.role.toUpperCase()}: ${m.content}`).join("\n\n");
     const compactionPrompt = `Summarize the following conversation into a compact set of key points. Preserve all decisions, facts the user shared, and conclusions reached. Be brief.\n\n${text}`;
 
     const statusEl = this.appendStatusMessage("Compacting older messages…");
@@ -769,28 +822,17 @@ export class BarChat extends Component implements ProgressReporter {
       for await (const token of stream) summary += token;
 
       statusEl.remove();
-      this.messages = [
-        { id: "compact-" + Date.now(), role: "assistant", content: `**[Earlier conversation, compacted]**\n\n${summary}` },
+
+      await this.config.chatStore.replaceSessionMessages(session.id, [
+        { role: "assistant", content: `**[Earlier conversation, compacted]**\n\n${summary}`, timestamp: Date.now() },
         ...recent,
-      ];
-      // Re-render
-      this.conversationEl.empty();
-      for (const m of this.messages) {
-        const el = this.renderMessage(m);
-        if (m.role === "assistant") {
-          await MarkdownRenderer.render(this.config.app, m.content, el, "", this);
-        }
-      }
+      ]);
+
       this.setState("done");
-      this.scrollToBottom();
+      await this.renderConversation();
     } catch (err: unknown) {
       statusEl.textContent = `✕ Compaction failed: ${(err as Error).message}`;
     }
-  }
-
-  // Backward-compat for old callers (PersistentBar.updateSkills)
-  updateSkills(_skills: Map<string, Skill>): void {
-    // getSkills() callback always fetches latest; no-op
   }
 }
 
@@ -809,6 +851,10 @@ function extractAsks(text: string): string[] {
     if (q) out.push(q);
   }
   return out;
+}
+
+function stripAsks(text: string): string {
+  return text.replace(ASK_PATTERN, "").trim();
 }
 
 function isLocalOrCliProvider(p: string): boolean {

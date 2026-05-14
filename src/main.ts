@@ -53,6 +53,7 @@ export default class GStackPlugin extends Plugin {
       app: this.app,
       settings: this.settings,
       getSkills: () => this.getSkills(),
+      chatStore: this.chatStore,
       onStreamingChange: (streaming, label) => {
         if (streaming && this.bar && !this.bar.isVisible()) {
           this.showStreamingIndicator(label);
