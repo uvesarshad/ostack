@@ -1,5 +1,5 @@
 {
-  "name": "obsidian-gstack",
+  "name": "ogstack",
   "version": "1.0.0",
   "description": "Vault-aware skill system for Obsidian",
   "main": "main.js",
@@ -10,7 +10,7 @@
     "test:watch": "vitest"
   },
   "keywords": [],
-  "author": "",
+  "author": "Uves Arshad",
   "license": "MIT",
   "devDependencies": {
     "@types/node": "^20.0.0",

@@ -1,8 +1,26 @@
-# obsidian-gstack
+# ogstack
 
-Vault-aware skill system for Obsidian. Run [gstack](https://github.com/garrytan/gstack) skills inside your vault — your linked notes become the context automatically.
+Vault-aware skill system for Obsidian. Bring [gstack](https://github.com/garrytan/gstack) skills inside your vault — your linked notes become the context automatically.
 
 Built by [Uves Arshad](https://x.com/uvesarshad) · [X](https://x.com/uvesarshad) · [LinkedIn](https://linkedin.com/in/uvesarshad)
+
+---
+
+## The story
+
+I posted about wanting to integrate gstack into Obsidian — using it for brainstorming sessions, research, and writing, all powered by my own vault as context. [Garry Tan](https://x.com/garrytan) liked the idea and reposted it.
+
+> 📣 **[See the original tweet →](https://x.com/uvesarshad/status/2054417498796376252?s=20)**
+
+So I built and shipped v1 in the next 24 hours.
+
+---
+
+## Inspired by gstack
+
+[gstack](https://github.com/garrytan/gstack) is an open-source project by [Garry Tan](https://github.com/garrytan) — 23+ specialist AI skills for developer workflows, defined as simple `SKILL.md` files and run from the command line via Claude Code.
+
+Each skill is a markdown file with a YAML frontmatter header and a system prompt. The format is human-readable, version-controllable, and composable. ogstack takes that same format and brings it natively into Obsidian — no CLI, no terminal, no copy-paste. Your vault notes replace the codebase as the context source.
 
 ---
 
@@ -28,9 +46,31 @@ No copy-paste. No context switching. The AI already knows what you know.
 
 ## Does this require the gstack CLI?
 
-**No.** This plugin is fully standalone. You do not need to install the gstack CLI or Claude Code. Everything runs inside Obsidian using direct API calls to your chosen provider.
+**No.** ogstack is fully standalone. You do not need to install the gstack CLI or Claude Code. Everything runs inside Obsidian using direct API calls to your chosen LLM provider.
 
-The plugin borrows gstack's `SKILL.md` format — the same human-readable skill definition files — but executes them itself using Obsidian's native APIs.
+The plugin borrows gstack's `SKILL.md` format but executes it entirely through Obsidian's native APIs.
+
+---
+
+## How the models work
+
+ogstack uses a **two-model pipeline** on every skill run.
+
+### Main model
+
+The main model is your primary LLM — Claude, GPT-4o, Gemini, or a local Ollama model. It receives the full assembled vault context and your skill's system prompt, then streams the response directly into your note. You configure which model in Settings → ogstack → Provider.
+
+Claude, OpenAI, and Gemini stream token-by-token via SSE so output appears in real time. Ollama returns the full response at once (streaming is a v2 feature).
+
+### Context Scout
+
+Before the main model runs, a fast cheap model (default: `gemini-2.0-flash-lite`) reads just the **title + first 200 characters** of the top 50 linked note candidates and scores each one for relevance to your active note (0.0 – 1.0). This takes ~2–5 seconds and costs fractions of a cent.
+
+Notes scoring **≥ 0.5** are included in full in the context window. Notes scoring **< 0.5** are represented by the scout's one-line annotation only — preserving their signal without burning tokens on content that doesn't matter.
+
+If the scout times out (8s hard limit) or fails, execution continues with metadata-only scoring. It never blocks the skill.
+
+You can disable the Scout or change the scout model in Settings → ogstack → Context section.
 
 ---
 
@@ -46,7 +86,7 @@ flowchart TD
     CB -->|cachedRead per level| VF[(Vault files)]
     CB -->|score = depth × 0.6 +\nrecency × 0.4| SC[Scored candidates]
     SC --> CS[context-scout.ts\nSemantic re-ranking]
-    CS -->|title + 200 chars\nof top 50 candidates| SP[Scout provider\ngemini-flash-lite]
+    CS -->|title + 200 chars\nof top 50 candidates| SP[Scout model\ngemini-flash-lite]
     SP -->|scores 0.0–1.0\n+ annotations| CS
     CS -->|high score → full body\nlow score → annotation only| CTX[VaultContext\nXML-tagged]
 
@@ -75,7 +115,7 @@ flowchart TD
 
 **No external LLM SDKs.** All provider calls use Obsidian's built-in `requestUrl()` (Ollama) or native `fetch()` (Claude, OpenAI, Gemini). `main.js` stays under 500 KB.
 
-**Two-stage context pipeline.** BFS metadata scoring runs first (fast, no I/O). A cheap scout model then re-ranks the top 50 candidates semantically. If the scout times out or fails, execution continues with metadata scoring only.
+**Two-stage context pipeline.** BFS metadata scoring runs first (fast, no I/O). The scout model then re-ranks the top 50 candidates semantically. If the scout times out or fails, execution continues with metadata scoring only — it never blocks the skill.
 
 **Per-note mutex.** Inline output to the same note is serialized. New-note output can run in parallel — separate targets, no conflict.
 
@@ -89,19 +129,19 @@ flowchart TD
 
 1. Install [BRAT](https://github.com/TfTHacker/obsidian42-brat) from the Obsidian community plugins
 2. In BRAT settings → Add Beta Plugin → paste this repo's URL
-3. Enable **gstack** in Settings → Community Plugins
+3. Enable **ogstack** in Settings → Community Plugins
 
 ### Manual
 
 1. Download `main.js`, `manifest.json`, `styles.css` from the latest [GitHub Release](../../releases)
-2. Copy to `.obsidian/plugins/obsidian-gstack/` in your vault
+2. Copy to `.obsidian/plugins/ogstack/` in your vault
 3. Enable the plugin in Settings → Community Plugins
 
 ---
 
 ## Setup
 
-1. Go to **Settings → gstack**
+1. Go to **Settings → ogstack**
 2. Choose your AI provider (Claude, OpenAI, Gemini, or Ollama)
 3. Paste your API key
 4. Open a note with linked notes and run `gs: Research`
@@ -137,7 +177,7 @@ YourVault/
             └── SKILL.md
 ```
 
-Each subfolder becomes one command. The folder name is used as the command slug.
+Each subfolder becomes one command. The folder name is the command slug.
 
 ### SKILL.md format
 
@@ -192,21 +232,19 @@ Scout: low relevance — outdated 2023 data
 </context>
 ```
 
-High-scored notes (≥ 0.5) are included in full. Low-scored notes appear as their annotation only, preserving signal without burning tokens.
-
-If your skill body has no `{{VAULT_CONTEXT}}`, it runs as a plain prompt — the plugin logs a warning to the developer console but does not block execution.
+High-scored notes (≥ 0.5) are included in full. Low-scored notes appear as their scout annotation only.
 
 ### Output modes
 
 **`output: inline`** — tokens stream into the active note at your cursor position in real time.
 
-**`output: new-note`** — a new note is created in the same folder as the active note, named `[Active Note] — [Skill Name].md`, and opened in a split pane. The skill output streams into it.
+**`output: new-note`** — a new note is created in the same folder as the active note, named `[Active Note] — [Skill Name].md`, and opened in a split pane.
 
-The `output:` field in `SKILL.md` overrides the global default in Settings → gstack → Default output mode.
+The `output:` field in `SKILL.md` overrides the global default in Settings → ogstack → Default output mode.
 
 ### Name collisions
 
-If a custom skill has the same `name` as a built-in skill (`research`, `campaign`, `plan`, `outline`, `review`), the custom skill is skipped and an Obsidian notice is shown. Rename the custom skill's `name` field to resolve it.
+If a custom skill has the same `name` as a built-in skill (`research`, `campaign`, `plan`, `outline`, `review`), the custom skill is skipped and a notice is shown. Rename the custom skill's `name` field to resolve it.
 
 ---
 
@@ -216,7 +254,7 @@ When you run a skill, the plugin:
 
 1. **BFS traversal** — walks forward links from the active note up to `max_depth` hops, capping at 200 nodes
 2. **Metadata scoring** — scores each candidate: `(1/depth) × 0.6 + recency_decay × 0.4`
-3. **Context Scout** *(optional, default on)* — a fast model reads the title + first 200 characters of the top 50 candidates and returns relevance scores (0–1) and a one-line annotation per note
+3. **Context Scout** *(optional, default on)* — a fast model reads the title + first 200 characters of the top 50 candidates and returns relevance scores and annotations
 4. **Budget enforcement** — notes are accumulated in score order until the token budget is exhausted; whole files are dropped, never truncated
 5. **Context format** — assembled as XML-tagged blocks, high-scored notes in full, low-scored notes as annotation only
 
@@ -250,7 +288,7 @@ npm run build      # production bundle → main.js
 
 **Stack:** TypeScript · esbuild · Vitest · Obsidian Plugin SDK
 
-To test against a real vault: copy or symlink the repo into `.obsidian/plugins/obsidian-gstack/` and enable the plugin. `npm run dev` rebuilds on save; reload with `Ctrl+R` in Obsidian (or via the BRAT hot-reload shortcut).
+To test against a real vault: copy or symlink the repo into `.obsidian/plugins/ogstack/` and enable the plugin. `npm run dev` rebuilds on save; reload with `Ctrl+R` in Obsidian.
 
 ---
 
@@ -260,4 +298,4 @@ MIT
 
 ---
 
-*Built by [Uves Arshad](https://x.com/uvesarshad) — [X](https://x.com/uvesarshad) · [LinkedIn](https://linkedin.com/in/uvesarshad)*
+*Built by [Uves Arshad](https://x.com/uvesarshad) — follow on [X](https://x.com/uvesarshad) for updates.*
