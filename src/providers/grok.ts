@@ -1,18 +1,20 @@
 import { LLMProvider, LLMRequest } from "./provider-interface";
 
-export class OllamaProvider implements LLMProvider {
-  constructor(private host: string, private model: string) {}
+export class GrokProvider implements LLMProvider {
+  constructor(private apiKey: string, private model: string) {}
 
   async *stream(request: LLMRequest): AsyncGenerator<string, void, unknown> {
-    const url = `${this.host.replace(/\/$/, "")}/api/chat`;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 120_000);
 
     let response: Response;
     try {
-      response = await fetch(url, {
+      response = await fetch("https://api.x.ai/v1/chat/completions", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${this.apiKey}`,
+        },
         body: JSON.stringify({
           model: this.model,
           messages: [
@@ -28,7 +30,7 @@ export class OllamaProvider implements LLMProvider {
     } catch (err: unknown) {
       clearTimeout(timeout);
       if ((err as { name?: string }).name === "AbortError") throw new Error("timeout");
-      throw { status: 0, body: String(err) };
+      throw err;
     }
 
     if (!response.ok) {
@@ -49,23 +51,23 @@ export class OllamaProvider implements LLMProvider {
         if (done) break;
 
         buffer += decoder.decode(value, { stream: true });
-        // Ollama uses NDJSON: one JSON object per line, no SSE framing
         const lines = buffer.split("\n");
         buffer = lines.pop() ?? "";
 
         for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed) continue;
+          if (!line.startsWith("data: ")) continue;
+          const data = line.slice(6).trim();
+          if (data === "[DONE]") return;
 
           let parsed: unknown;
-          try { parsed = JSON.parse(trimmed); } catch { continue; }
+          try { parsed = JSON.parse(data); } catch { continue; }
 
           const p = parsed as Record<string, unknown>;
-          const message = p.message as Record<string, unknown> | undefined;
-          if (typeof message?.content === "string" && message.content) {
-            yield message.content;
+          const choices = p.choices as Array<Record<string, unknown>> | undefined;
+          const delta = choices?.[0]?.delta as Record<string, unknown> | undefined;
+          if (typeof delta?.content === "string" && delta.content) {
+            yield delta.content;
           }
-          if (p.done === true) return;
         }
       }
     } finally {

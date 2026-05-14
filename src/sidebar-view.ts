@@ -192,7 +192,7 @@ export class OgstackSidebarView extends ItemView {
 
     const textarea = container.createEl("textarea", {
       cls: "gstack-chat-textarea",
-      placeholder: "Message ogstack…  /skill  @[[note]]  Shift+Enter = newline",
+      placeholder: "Ask anything · type / for skills · @ to mention a note",
     });
     (textarea as HTMLTextAreaElement).rows = 2;
 

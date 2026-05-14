@@ -1,7 +1,17 @@
-import { App, Notice, Plugin, PluginSettingTab, Setting } from "obsidian";
+import { App, Plugin, PluginSettingTab, Setting } from "obsidian";
+
+export type ProviderId =
+  | "claude"
+  | "openai"
+  | "gemini"
+  | "ollama"
+  | "grok"
+  | "claude-cli"
+  | "codex-cli"
+  | "gemini-cli";
 
 export interface GStackSettings {
-  provider: "claude" | "openai" | "gemini" | "ollama";
+  provider: ProviderId;
   apiKey: string;
   model: string;
   ollamaHost: string;
@@ -10,6 +20,8 @@ export interface GStackSettings {
   scoutEnabled: boolean;
   scoutModel: string;
   contextDecayDays: number;
+  compactionThreshold: number;
+  cliPath: string;
 }
 
 export const DEFAULT_SETTINGS: GStackSettings = {
@@ -22,28 +34,50 @@ export const DEFAULT_SETTINGS: GStackSettings = {
   scoutEnabled: true,
   scoutModel: "gemini-2.0-flash-lite",
   contextDecayDays: 14,
+  compactionThreshold: 8000,
+  cliPath: "",
 };
 
-const PROVIDER_LABELS: Record<GStackSettings["provider"], string> = {
-  claude: "Claude",
-  openai: "OpenAI",
-  gemini: "Gemini",
+const PROVIDER_LABELS: Record<ProviderId, string> = {
+  claude: "Claude (API key)",
+  openai: "OpenAI (API key)",
+  gemini: "Gemini (API key)",
+  grok: "Grok / xAI (API key)",
   ollama: "Ollama (local)",
+  "claude-cli": "Claude Code CLI (subscription)",
+  "codex-cli": "Codex CLI (subscription)",
+  "gemini-cli": "Gemini CLI (subscription)",
 };
 
-const API_KEY_LINKS: Record<GStackSettings["provider"], string> = {
+const API_KEY_LINKS: Record<ProviderId, string> = {
   claude: "Get your key at anthropic.com/api",
   openai: "Get your key at platform.openai.com/api-keys",
   gemini: "Get your key at aistudio.google.com",
+  grok: "Get your key at x.ai (xAI console)",
   ollama: "No API key needed for local models.",
+  "claude-cli": "Uses your Claude Code CLI auth (run `claude login` in terminal first).",
+  "codex-cli": "Uses your Codex CLI auth (run `codex login` in terminal first).",
+  "gemini-cli": "Uses your Gemini CLI auth (run `gemini auth` in terminal first).",
 };
 
-const MODEL_PLACEHOLDERS: Record<GStackSettings["provider"], string> = {
+const MODEL_PLACEHOLDERS: Record<ProviderId, string> = {
   claude: "claude-sonnet-4-6",
   openai: "gpt-4o",
   gemini: "gemini-2.0-flash",
+  grok: "grok-2-latest",
   ollama: "llama3.2",
+  "claude-cli": "sonnet",
+  "codex-cli": "gpt-5",
+  "gemini-cli": "gemini-2.5-pro",
 };
+
+function isCliProvider(p: ProviderId): boolean {
+  return p === "claude-cli" || p === "codex-cli" || p === "gemini-cli";
+}
+
+function isApiKeyProvider(p: ProviderId): boolean {
+  return p === "claude" || p === "openai" || p === "gemini" || p === "grok";
+}
 
 interface PluginWithSettings extends Plugin {
   settings: GStackSettings;
@@ -73,6 +107,7 @@ export class GStackSettingTab extends PluginSettingTab {
     let apiKeyDisclaimerEl: HTMLElement;
     let apiKeyTextField: { setDesc: (s: string) => void } | null = null;
     let ollamaHostSetting: Setting;
+    let cliPathSetting: Setting;
 
     providerSetting.addDropdown((dd) => {
       for (const [value, label] of Object.entries(PROVIDER_LABELS)) {
@@ -80,18 +115,19 @@ export class GStackSettingTab extends PluginSettingTab {
       }
       dd.setValue(this.plugin.settings.provider);
       dd.onChange(async (value) => {
-        this.plugin.settings.provider = value as GStackSettings["provider"];
+        this.plugin.settings.provider = value as ProviderId;
         await this.plugin.saveSettings();
         this.updateProviderUI(
-          value as GStackSettings["provider"],
+          value as ProviderId,
           apiKeySetting,
           apiKeyDisclaimerEl,
-          ollamaHostSetting
+          ollamaHostSetting,
+          cliPathSetting
         );
         if (apiKeyTextField) {
-          apiKeySetting.setDesc(API_KEY_LINKS[value as GStackSettings["provider"]]);
+          apiKeySetting.setDesc(API_KEY_LINKS[value as ProviderId]);
         }
-        const placeholder = MODEL_PLACEHOLDERS[value as GStackSettings["provider"]];
+        const placeholder = MODEL_PLACEHOLDERS[value as ProviderId];
         modelTextField?.setPlaceholder(`Default (${placeholder})`);
       });
     });
@@ -165,11 +201,26 @@ export class GStackSettingTab extends PluginSettingTab {
       });
     });
 
+    cliPathSetting = new Setting(containerEl)
+      .setName("CLI binary path")
+      .setDesc("Optional. Leave blank to use the system PATH (recommended). Override only if the CLI is installed in a non-standard location.");
+
+    cliPathSetting.addText((text) => {
+      text
+        .setPlaceholder("auto-detect from PATH")
+        .setValue(this.plugin.settings.cliPath)
+        .onChange(async (value) => {
+          this.plugin.settings.cliPath = value.trim();
+          await this.plugin.saveSettings();
+        });
+    });
+
     this.updateProviderUI(
       this.plugin.settings.provider,
       apiKeySetting,
       apiKeyDisclaimerEl,
-      ollamaHostSetting
+      ollamaHostSetting,
+      cliPathSetting
     );
 
     // --- Context ---
@@ -260,14 +311,18 @@ export class GStackSettingTab extends PluginSettingTab {
   }
 
   private updateProviderUI(
-    provider: GStackSettings["provider"],
+    provider: ProviderId,
     apiKeySetting: Setting,
     disclaimerEl: HTMLElement,
-    ollamaHostSetting: Setting
+    ollamaHostSetting: Setting,
+    cliPathSetting: Setting
   ): void {
-    const isOllama = provider === "ollama";
-    apiKeySetting.settingEl.classList.toggle("gstack-hidden", isOllama);
-    disclaimerEl.classList.toggle("gstack-hidden", isOllama);
-    ollamaHostSetting.settingEl.classList.toggle("gstack-hidden", !isOllama);
+    const showApiKey = isApiKeyProvider(provider);
+    const showOllama = provider === "ollama";
+    const showCli = isCliProvider(provider);
+    apiKeySetting.settingEl.classList.toggle("gstack-hidden", !showApiKey);
+    disclaimerEl.classList.toggle("gstack-hidden", !showApiKey);
+    ollamaHostSetting.settingEl.classList.toggle("gstack-hidden", !showOllama);
+    cliPathSetting.settingEl.classList.toggle("gstack-hidden", !showCli);
   }
 }

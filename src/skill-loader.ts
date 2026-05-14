@@ -1,6 +1,8 @@
 import { App, Notice } from "obsidian";
 import { BUILTIN_SKILL_FILES } from "./builtin-skills";
 
+export type SkillMode = "oneshot" | "interactive";
+
 export interface Skill {
   name: string;
   description: string;
@@ -8,6 +10,8 @@ export interface Skill {
   maxDepth: number;
   maxTokens: number | null;
   systemPrompt: string;
+  mode: SkillMode;          // "interactive" can pause via <ASK>
+  autoInsert: boolean;      // true = also auto-insert into note (old behavior)
 }
 
 interface ParsedFrontmatter {
@@ -16,6 +20,8 @@ interface ParsedFrontmatter {
   output?: string;
   max_depth?: string;
   max_tokens?: string;
+  mode?: string;
+  auto_insert?: string;
 }
 
 function parseFrontmatter(content: string): { fm: ParsedFrontmatter; body: string } | null {
@@ -52,6 +58,8 @@ export function parseSKILL(content: string, sourcePath: string): Skill | null {
     fm.output === "new-note" ? "new-note" : fm.output === "inline" ? "inline" : undefined;
   const maxDepth = fm.max_depth ? parseInt(fm.max_depth, 10) : 3;
   const maxTokens = fm.max_tokens ? parseInt(fm.max_tokens, 10) : null;
+  const mode: SkillMode = fm.mode === "interactive" ? "interactive" : "oneshot";
+  const autoInsert = fm.auto_insert === "true";
 
   return {
     name: fm.name,
@@ -60,6 +68,8 @@ export function parseSKILL(content: string, sourcePath: string): Skill | null {
     maxDepth: isNaN(maxDepth) ? 3 : maxDepth,
     maxTokens: maxTokens !== null && !isNaN(maxTokens) ? maxTokens : null,
     systemPrompt: body,
+    mode,
+    autoInsert,
   };
 }
 

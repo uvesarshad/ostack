@@ -1,10 +1,10 @@
 import { Plugin } from "obsidian";
+import { BarChat } from "./bar-chat";
 import { ChatStore } from "./chat-store";
 import { DEFAULT_SETTINGS, GStackSettings, GStackSettingTab } from "./settings";
 import { OgstackSidebarView, SIDEBAR_VIEW_TYPE } from "./sidebar-view";
 import { createSkillLoader, Skill, SkillLoader } from "./skill-loader";
 import { runSkill } from "./skill-runner";
-import { PersistentBar } from "./persistent-bar";
 import { WelcomeModal } from "./welcome-modal";
 import { ImportSkillModal } from "./import-skill-modal";
 
@@ -12,7 +12,8 @@ export default class GStackPlugin extends Plugin {
   settings: GStackSettings = { ...DEFAULT_SETTINGS };
   chatStore: ChatStore = new ChatStore(this);
   private skillLoader: SkillLoader | null = null;
-  private bar: PersistentBar | null = null;
+  bar: BarChat | null = null;
+  private statusIndicator: HTMLElement | null = null;
 
   async onload(): Promise<void> {
     await this.loadSettings();
@@ -32,9 +33,7 @@ export default class GStackPlugin extends Plugin {
         this.addCommand({
           id: commandId,
           name: `gs: ${titleCase(skill.name)}`,
-          callback: () => {
-            runSkill(skill, this.app, this.settings, this.bar ?? undefined);
-          },
+          callback: () => this.runSkillFromCommand(skill),
         });
         return () => {
           (this.app as unknown as { commands: { removeCommand(id: string): void } })
@@ -45,11 +44,22 @@ export default class GStackPlugin extends Plugin {
 
     await this.skillLoader.loadAll();
 
-    // Create persistent AI bar (after skills are loaded)
-    this.bar = new PersistentBar({
-      skills: this.getSkills(),
-      onSkillRun: (skill) => runSkill(skill, this.app, this.settings, this.bar ?? undefined),
-      onFreeQuery: (text) => this.openChatWithMessage(text),
+    // Status bar indicator (shows pulse when AI streams in background)
+    this.statusIndicator = this.addStatusBarItem();
+    this.statusIndicator.style.display = "none";
+
+    // New conversation bar
+    this.bar = new BarChat({
+      app: this.app,
+      settings: this.settings,
+      getSkills: () => this.getSkills(),
+      onStreamingChange: (streaming, label) => {
+        if (streaming && this.bar && !this.bar.isVisible()) {
+          this.showStreamingIndicator(label);
+        } else {
+          this.hideStreamingIndicator();
+        }
+      },
     });
 
     this.addCommand({
@@ -65,7 +75,6 @@ export default class GStackPlugin extends Plugin {
       callback: () => {
         new ImportSkillModal(this.app, () => {
           this.skillLoader?.loadAll();
-          if (this.bar) this.bar.updateSkills(this.getSkills());
         }).open();
       },
     });
@@ -84,6 +93,35 @@ export default class GStackPlugin extends Plugin {
 
   getSkills(): Map<string, Skill> {
     return this.skillLoader?.getRegisteredSkills() ?? new Map();
+  }
+
+  private async runSkillFromCommand(skill: Skill): Promise<void> {
+    // Skills with auto_insert and oneshot mode → also stream into note via legacy runner
+    // Default: route to the new bar conversation surface
+    if (skill.autoInsert && skill.mode !== "interactive") {
+      await runSkill(skill, this.app, this.settings, this.bar ?? undefined);
+      return;
+    }
+    if (this.bar) {
+      await this.bar.runSkill(skill);
+    }
+  }
+
+  showStreamingIndicator(label: string): void {
+    if (!this.statusIndicator) return;
+    this.statusIndicator.style.display = "";
+    this.statusIndicator.empty();
+    const wrap = this.statusIndicator.createSpan({ cls: "gstack-statusbar-streaming" });
+    wrap.createSpan({ cls: "dot" });
+    wrap.createSpan({ cls: "dot" });
+    wrap.createSpan({ cls: "dot" });
+    wrap.createSpan({ text: ` ${label}` });
+  }
+
+  hideStreamingIndicator(): void {
+    if (!this.statusIndicator) return;
+    this.statusIndicator.style.display = "none";
+    this.statusIndicator.empty();
   }
 
   private async toggleSidebar(): Promise<void> {
@@ -128,6 +166,7 @@ export default class GStackPlugin extends Plugin {
 
   async saveSettings(): Promise<void> {
     await this.saveData(this.settings);
+    this.bar?.updateSettings(this.settings);
   }
 }
 
