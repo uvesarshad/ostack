@@ -1,0 +1,14 @@
+.gstack-api-disclaimer {
+  background-color: var(--background-modifier-error);
+  border: 1px solid var(--background-modifier-error-hover);
+  border-radius: var(--radius-s);
+  padding: 8px 12px;
+  margin-top: 8px;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-error);
+  line-height: 1.5;
+}
+
+.gstack-hidden {
+  display: none;
+}

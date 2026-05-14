@@ -1,0 +1,16 @@
+{
+  "id": "obsidian-gstack",
+  "name": "gstack",
+  "version": "1.0.0",
+  "minAppVersion": "1.0.0",
+  "description": "Vault-aware skill system — run gstack skills with your linked notes as context.",
+  "author": "gstack",
+  "authorUrl": "https://github.com/garrytan/gstack",
+  "isDesktopOnly": true,
+  "requestUrls": [
+    "https://api.anthropic.com",
+    "https://api.openai.com",
+    "https://generativelanguage.googleapis.com",
+    "http://localhost:11434"
+  ]
+}
