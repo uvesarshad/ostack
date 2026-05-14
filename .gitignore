@@ -2,3 +2,4 @@ node_modules
 .claude/
 *.js.map
 temp/
+.env

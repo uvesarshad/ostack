@@ -1,3 +1,735 @@
+/* ── Shared animations ────────────────────────────────────────── */
+
+@keyframes gstack-spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes gstack-pulse {
+  0%, 80%, 100% { opacity: 0.3; }
+  40% { opacity: 1; }
+}
+
+@keyframes gstack-bar-shimmer {
+  from { left: -80%; }
+  to   { left: 150%; }
+}
+
+@keyframes gstack-bar-border-pulse {
+  0%, 100% {
+    box-shadow: 0 6px 28px rgba(0, 0, 0, 0.2),
+                0 0 0 0 color-mix(in srgb, var(--interactive-accent) 30%, transparent);
+  }
+  50% {
+    box-shadow: 0 6px 36px rgba(0, 0, 0, 0.25),
+                0 0 14px 4px color-mix(in srgb, var(--interactive-accent) 22%, transparent);
+  }
+}
+
+@keyframes gstack-done-flash {
+  0%   { box-shadow: 0 6px 28px rgba(0,0,0,0.2), 0 0 0 0 color-mix(in srgb, var(--color-green) 50%, transparent); }
+  40%  { box-shadow: 0 6px 36px rgba(0,0,0,0.22), 0 0 20px 8px color-mix(in srgb, var(--color-green) 30%, transparent); }
+  100% { box-shadow: 0 6px 28px rgba(0,0,0,0.2), 0 0 0 0 transparent; }
+}
+
+@keyframes gstack-error-flash {
+  0%   { box-shadow: 0 6px 28px rgba(0,0,0,0.2), 0 0 0 0 color-mix(in srgb, var(--color-red) 50%, transparent); }
+  40%  { box-shadow: 0 6px 36px rgba(0,0,0,0.22), 0 0 20px 8px color-mix(in srgb, var(--color-red) 30%, transparent); }
+  100% { box-shadow: 0 6px 28px rgba(0,0,0,0.2), 0 0 0 0 transparent; }
+}
+
+/* ── Persistent floating AI bar ───────────────────────────────── */
+
+.gstack-bar-container {
+  position: fixed;
+  bottom: 52px; /* above Obsidian status bar */
+  left: 50%;
+  transform: translateX(-50%) translateY(12px);
+  width: min(620px, 84vw);
+  z-index: 200;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+
+.gstack-bar-container.visible {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+  pointer-events: auto;
+}
+
+/* Suggestion popup (floats above the pill) */
+.gstack-bar-popup {
+  position: absolute;
+  bottom: calc(100% + 10px);
+  left: 0;
+  right: 0;
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 12px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.22);
+  overflow: hidden;
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.gstack-bar-popup-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 16px;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+
+.gstack-bar-popup-item:hover,
+.gstack-bar-popup-item.selected {
+  background: var(--background-modifier-hover);
+}
+
+.gstack-bar-popup-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-accent);
+  min-width: 110px;
+  flex-shrink: 0;
+}
+
+.gstack-bar-popup-desc {
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The pill itself */
+.gstack-bar-pill {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 18px;
+  background: var(--background-primary);
+  border: 1.5px solid var(--background-modifier-border);
+  border-radius: 32px;
+  box-shadow: 0 6px 28px rgba(0, 0, 0, 0.18), 0 1px 4px rgba(0, 0, 0, 0.08);
+  overflow: hidden;
+  transition: border-color 0.25s, box-shadow 0.25s;
+  cursor: text;
+}
+
+/* Shimmer overlay — slides across during running state */
+.gstack-bar-shimmer {
+  position: absolute;
+  top: 0;
+  left: -80%;
+  width: 60%;
+  height: 100%;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--interactive-accent) 18%, transparent),
+    transparent
+  );
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.3s;
+}
+
+.gstack-bar-pill.running .gstack-bar-shimmer {
+  opacity: 1;
+  animation: gstack-bar-shimmer 1.7s ease-in-out infinite;
+}
+
+.gstack-bar-pill.focused {
+  border-color: color-mix(in srgb, var(--interactive-accent) 60%, var(--background-modifier-border));
+  box-shadow: 0 6px 32px rgba(0, 0, 0, 0.2),
+              0 0 0 3px color-mix(in srgb, var(--interactive-accent) 12%, transparent);
+}
+
+.gstack-bar-pill.running {
+  border-color: var(--interactive-accent);
+  animation: gstack-bar-border-pulse 2s ease-in-out infinite;
+  cursor: default;
+}
+
+.gstack-bar-pill.done {
+  border-color: var(--color-green);
+  animation: gstack-done-flash 0.7s ease-out forwards;
+}
+
+.gstack-bar-pill.error {
+  border-color: var(--color-red);
+  animation: gstack-error-flash 0.7s ease-out forwards;
+}
+
+.gstack-bar-icon {
+  color: var(--color-accent);
+  font-size: 18px;
+  line-height: 1;
+  flex-shrink: 0;
+  transition: transform 0.3s;
+}
+
+.gstack-bar-pill.running .gstack-bar-icon {
+  animation: gstack-spin 2s linear infinite;
+}
+
+.gstack-bar-input-wrap {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  transition: opacity 0.2s;
+}
+
+.gstack-bar-pill.running .gstack-bar-input-wrap {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.gstack-bar-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  font-size: 14px;
+  color: var(--text-normal);
+  caret-color: var(--color-accent);
+  font-family: inherit;
+}
+
+.gstack-bar-hint {
+  font-size: 11px;
+  color: var(--text-faint);
+  background: var(--background-modifier-border);
+  border-radius: 4px;
+  padding: 2px 7px;
+  flex-shrink: 0;
+  transition: opacity 0.2s;
+}
+
+/* Status wrap: overlaid over the input-wrap area when running */
+.gstack-bar-status-wrap {
+  position: absolute;
+  left: 52px; /* after icon + padding */
+  right: 18px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s;
+  font-size: 13px;
+}
+
+.gstack-bar-pill.running .gstack-bar-status-wrap { opacity: 1; pointer-events: auto; }
+.gstack-bar-pill.done    .gstack-bar-status-wrap { opacity: 1; pointer-events: auto; color: var(--color-green); }
+.gstack-bar-pill.error   .gstack-bar-status-wrap { opacity: 1; pointer-events: auto; color: var(--text-error); }
+.gstack-bar-pill.idle    .gstack-bar-status-wrap { opacity: 0; }
+
+.gstack-bar-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: gstack-spin 0.7s linear infinite;
+  flex-shrink: 0;
+}
+
+.gstack-bar-status-text {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ── Floating input overlay (Cmd+K style) ─────────────────────── */
+
+.gstack-fi-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  z-index: 1000;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 18vh;
+}
+
+.gstack-fi-progress-wrap {
+  position: fixed;
+  top: 28%;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1000;
+}
+
+.gstack-fi-panel {
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 14px;
+  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.35), 0 2px 8px rgba(0, 0, 0, 0.15);
+  width: min(620px, 90vw);
+  overflow: hidden;
+}
+
+.gstack-fi-input-wrap {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 20px;
+}
+
+.gstack-fi-icon {
+  color: var(--color-accent);
+  font-size: 20px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.gstack-fi-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  font-size: 16px;
+  color: var(--text-normal);
+  caret-color: var(--color-accent);
+  font-family: inherit;
+}
+
+.gstack-fi-esc {
+  font-size: 11px;
+  color: var(--text-faint);
+  background: var(--background-modifier-border);
+  border-radius: 4px;
+  padding: 2px 6px;
+  flex-shrink: 0;
+}
+
+.gstack-fi-suggestions { display: none; border-top: 1px solid var(--background-modifier-border); padding: 6px; }
+.gstack-fi-suggestions.visible { display: block; }
+
+.gstack-fi-suggest-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+.gstack-fi-suggest-item:hover, .gstack-fi-suggest-item.selected { background: var(--background-modifier-hover); }
+.gstack-fi-suggest-name { font-size: 14px; font-weight: 500; color: var(--color-accent); min-width: 110px; flex-shrink: 0; }
+.gstack-fi-suggest-desc { font-size: 13px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.gstack-fi-status {
+  display: none;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 20px;
+  font-size: 14px;
+  color: var(--text-muted);
+  min-width: 260px;
+}
+.gstack-fi-status.loading { color: var(--text-normal); }
+.gstack-fi-status.done    { color: var(--color-green); }
+.gstack-fi-status.error   { color: var(--text-error); }
+
+.gstack-fi-spinner {
+  width: 15px;
+  height: 15px;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: gstack-spin 0.7s linear infinite;
+  flex-shrink: 0;
+}
+
+.gstack-fi-check, .gstack-fi-x { font-weight: 700; flex-shrink: 0; }
+
+/* ── Chat sidebar ─────────────────────────────────────────────── */
+
+.gstack-chat {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+  font-size: var(--font-ui-small);
+  padding-bottom: 4px; /* status bar clearance handled by the container */
+}
+
+.gstack-chat-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--background-modifier-border);
+  flex-shrink: 0;
+}
+
+.gstack-chat-title {
+  font-weight: 600;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gstack-chat-icon-btn {
+  all: unset;
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 16px;
+  line-height: 1;
+  width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  flex-shrink: 0;
+  transition: background 0.1s;
+}
+.gstack-chat-icon-btn:hover { background: var(--background-modifier-hover); color: var(--text-normal); }
+
+.gstack-chat-body {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+/* ── Sessions screen ──────────────────────────────────────────── */
+
+.gstack-session-list { padding: 6px; }
+
+.gstack-session-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.1s;
+  margin-bottom: 2px;
+}
+.gstack-session-item:hover { background: var(--background-modifier-hover); }
+
+.gstack-session-info { flex: 1; min-width: 0; }
+.gstack-session-title { font-weight: 500; color: var(--text-normal); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.gstack-session-preview { font-size: var(--font-ui-smaller); color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px; }
+
+.gstack-session-meta { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; flex-shrink: 0; }
+.gstack-session-time { font-size: 10px; color: var(--text-faint); }
+.gstack-session-del { all: unset; cursor: pointer; color: var(--text-faint); font-size: 14px; line-height: 1; opacity: 0; transition: opacity 0.1s; }
+.gstack-session-item:hover .gstack-session-del { opacity: 0.5; }
+.gstack-session-del:hover { opacity: 1 !important; color: var(--text-error); }
+
+/* Sessions empty state */
+.gstack-chat-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 32px 20px 24px;
+  text-align: center;
+  gap: 6px;
+}
+.gstack-chat-empty-icon { font-size: 28px; opacity: 0.3; margin-bottom: 6px; }
+.gstack-chat-empty-title { font-weight: 600; color: var(--text-normal); margin: 0; }
+.gstack-chat-empty-sub { font-size: var(--font-ui-smaller); color: var(--text-muted); margin: 0; line-height: 1.5; max-width: 220px; }
+
+.gstack-chat-empty-tips {
+  margin-top: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  max-width: 260px;
+}
+.gstack-chat-tip-row {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  text-align: left;
+  padding: 6px 10px;
+  background: var(--background-secondary);
+  border-radius: 8px;
+}
+.gstack-chat-tip-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--color-accent);
+  min-width: 72px;
+  flex-shrink: 0;
+}
+.gstack-chat-tip-desc {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+/* ── Chat screen ──────────────────────────────────────────────── */
+
+.gstack-chat-messages {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 12px;
+}
+
+/* Chat intro (empty state for a new session) */
+.gstack-chat-intro {
+  margin: 12px 0;
+  padding: 14px 16px;
+  background: var(--background-secondary);
+  border-radius: 12px;
+}
+.gstack-chat-intro-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-normal);
+  margin-bottom: 10px;
+}
+.gstack-chat-intro-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.gstack-chat-intro-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+.gstack-chat-intro-key {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--color-accent);
+  background: color-mix(in srgb, var(--interactive-accent) 12%, transparent);
+  border-radius: 4px;
+  padding: 2px 6px;
+  min-width: 72px;
+  flex-shrink: 0;
+  text-align: center;
+  font-family: var(--font-monospace);
+}
+.gstack-chat-intro-val {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+.gstack-chat-hint { text-align: center; color: var(--text-faint); font-size: var(--font-ui-smaller); padding: 12px 0; }
+
+/* Message bubbles */
+.gstack-msg {
+  max-width: 88%;
+  border-radius: 14px;
+  padding: 9px 14px;
+  line-height: 1.6;
+  word-break: break-word;
+  font-size: var(--font-ui-small);
+}
+.gstack-msg p:first-child { margin-top: 0; }
+.gstack-msg p:last-child  { margin-bottom: 0; }
+.gstack-msg code { font-size: 0.9em; }
+
+.gstack-msg-user {
+  align-self: flex-end;
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+  border-bottom-right-radius: 4px;
+}
+.gstack-msg-assistant {
+  align-self: flex-start;
+  background: var(--background-secondary);
+  color: var(--text-normal);
+  border-bottom-left-radius: 4px;
+}
+
+/* @ mention chip inside user message */
+.gstack-msg-mention {
+  display: inline-block;
+  background: color-mix(in srgb, var(--text-on-accent) 20%, transparent);
+  border-radius: 4px;
+  padding: 0 4px;
+  font-size: 0.9em;
+  font-weight: 500;
+}
+
+.gstack-msg-cursor {
+  display: inline-block;
+  color: var(--color-accent);
+  animation: gstack-pulse 1.2s ease-in-out infinite;
+}
+.gstack-msg-error { color: var(--text-error); font-style: italic; }
+
+/* Input area */
+.gstack-chat-input-area {
+  flex-shrink: 0;
+  border-top: 1px solid var(--background-modifier-border);
+  padding: 8px 10px 22px;
+  position: relative;
+}
+
+/* Slash / @ suggest popup */
+.gstack-chat-suggest {
+  display: none;
+  position: absolute;
+  bottom: calc(100% - 8px);
+  left: 10px;
+  right: 10px;
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 10px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
+  overflow: hidden;
+  z-index: 100;
+  max-height: 200px;
+  overflow-y: auto;
+}
+.gstack-chat-suggest.visible { display: block; }
+
+.gstack-chat-suggest-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+.gstack-chat-suggest-item:hover, .gstack-chat-suggest-item.selected { background: var(--background-modifier-hover); }
+
+.gstack-chat-suggest-name {
+  font-weight: 500;
+  color: var(--color-accent);
+  min-width: 80px;
+  flex-shrink: 0;
+  font-size: var(--font-ui-small);
+}
+.gstack-chat-suggest-note { color: var(--text-accent); }
+.gstack-chat-suggest-desc { font-size: var(--font-ui-smaller); color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.gstack-chat-textarea {
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--background-modifier-form-field);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 10px;
+  padding: 9px 12px;
+  font-size: var(--font-ui-small);
+  font-family: inherit;
+  color: var(--text-normal);
+  resize: none;
+  outline: none;
+  line-height: 1.5;
+  transition: border-color 0.15s;
+  display: block;
+}
+.gstack-chat-textarea:focus { border-color: var(--interactive-accent); }
+
+.gstack-chat-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 6px;
+}
+.gstack-chat-hint-text { font-size: 10px; color: var(--text-faint); }
+
+.gstack-chat-send-btn {
+  all: unset;
+  cursor: pointer;
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+  border-radius: 7px;
+  padding: 5px 16px;
+  font-size: var(--font-ui-smaller);
+  font-weight: 500;
+  transition: opacity 0.15s;
+}
+.gstack-chat-send-btn:hover:not(:disabled) { opacity: 0.85; }
+.gstack-chat-send-btn:disabled { opacity: 0.4; cursor: default; }
+
+/* ── Welcome modal ────────────────────────────────────────────── */
+
+.gstack-welcome {
+  padding: 4px 8px 16px;
+  max-width: 480px;
+}
+.gstack-welcome-icon {
+  font-size: 32px;
+  text-align: center;
+  margin-bottom: 8px;
+  opacity: 0.7;
+}
+.gstack-welcome h2 { margin: 0 0 6px; font-size: 20px; }
+.gstack-welcome-sub { color: var(--text-muted); margin: 0 0 20px; font-size: var(--font-ui-small); line-height: 1.5; }
+.gstack-welcome-heading { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); margin: 16px 0 6px; }
+.gstack-welcome-list { margin: 0; padding-left: 18px; }
+.gstack-welcome-list li { font-size: var(--font-ui-small); color: var(--text-normal); line-height: 1.6; margin-bottom: 3px; }
+.gstack-welcome-footer { display: flex; justify-content: flex-end; margin-top: 24px; }
+.gstack-welcome-btn {
+  all: unset;
+  cursor: pointer;
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+  border-radius: 8px;
+  padding: 8px 24px;
+  font-size: var(--font-ui-small);
+  font-weight: 600;
+  transition: opacity 0.15s;
+}
+.gstack-welcome-btn:hover { opacity: 0.85; }
+
+/* ── Import skill modal ───────────────────────────────────────── */
+
+.gstack-import-modal h2 { margin: 0 0 6px; font-size: 18px; }
+.gstack-import-desc { color: var(--text-muted); font-size: var(--font-ui-small); margin: 0 0 16px; line-height: 1.5; }
+
+.gstack-import-url {
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--background-modifier-form-field);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: var(--font-ui-small);
+  color: var(--text-normal);
+  margin-bottom: 12px;
+  display: block;
+}
+.gstack-import-url:focus { outline: none; border-color: var(--interactive-accent); }
+
+.gstack-import-btn-row { display: flex; gap: 8px; margin-bottom: 10px; }
+
+.gstack-import-btn {
+  all: unset;
+  cursor: pointer;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  padding: 7px 16px;
+  font-size: var(--font-ui-small);
+  font-weight: 500;
+  transition: background 0.1s;
+}
+.gstack-import-btn:hover { background: var(--background-modifier-hover); }
+.gstack-import-btn.mod-cta {
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+  border-color: transparent;
+}
+.gstack-import-btn.mod-cta:hover { opacity: 0.85; }
+.gstack-import-btn:disabled { opacity: 0.4; cursor: default; }
+
+.gstack-import-status {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  min-height: 1.4em;
+  margin: 0;
+}
+
+/* ── Settings ─────────────────────────────────────────────────── */
+
 .gstack-api-disclaimer {
   background-color: var(--background-modifier-error);
   border: 1px solid var(--background-modifier-error-hover);
@@ -9,6 +741,4 @@
   line-height: 1.5;
 }
 
-.gstack-hidden {
-  display: none;
-}
+.gstack-hidden { display: none; }

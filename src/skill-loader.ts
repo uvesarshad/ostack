@@ -1,4 +1,5 @@
 import { App, Notice } from "obsidian";
+import { BUILTIN_SKILL_FILES } from "./builtin-skills";
 
 export interface Skill {
   name: string;
@@ -76,7 +77,7 @@ export interface SkillLoader {
 
 type CommandRegistrar = (skill: Skill) => (() => void);
 
-const CUSTOM_SKILLS_FOLDER = ".gstack/skills";
+export const CUSTOM_SKILLS_FOLDER = "_agent";
 const DEBOUNCE_MS = 300;
 
 export function createSkillLoader(
@@ -113,18 +114,10 @@ export function createSkillLoader(
     unregisterFns.delete(name);
   }
 
-  async function loadBuiltinSkills(): Promise<void> {
-    // Built-in skills are bundled as files adjacent to main.js in the plugin directory
-    const skillNames = ["research", "campaign", "plan", "outline", "review"];
-    for (const name of skillNames) {
-      const path = `${pluginDir}/skills/${name}/SKILL.md`;
-      try {
-        const content = await app.vault.adapter.read(path);
-        const skill = parseSKILL(content, path);
-        if (skill) registerSkill(skill, true);
-      } catch {
-        console.warn(`gstack: could not load built-in skill "${name}" from ${path}`);
-      }
+  function loadBuiltinSkills(): void {
+    for (const { name, content } of BUILTIN_SKILL_FILES) {
+      const skill = parseSKILL(content, name);
+      if (skill) registerSkill(skill, true);
     }
   }
 
@@ -139,16 +132,29 @@ export function createSkillLoader(
       return;
     }
 
-    const { files } = await app.vault.adapter.list(CUSTOM_SKILLS_FOLDER);
-    const skillFiles = files.filter((f: string) => f.endsWith("/SKILL.md"));
+    const { files, folders } = await app.vault.adapter.list(CUSTOM_SKILLS_FOLDER);
 
-    for (const filePath of skillFiles) {
+    // Flat style: _agent/skill_name.md
+    for (const filePath of files.filter((f: string) => f.endsWith(".md"))) {
       try {
         const content = await app.vault.adapter.read(filePath);
         const skill = parseSKILL(content, filePath);
         if (skill) registerSkill(skill, false);
       } catch {
-        console.warn(`gstack: could not read custom skill at ${filePath}`);
+        console.warn(`ogstack: could not read skill at ${filePath}`);
+      }
+    }
+
+    // Folder style: _agent/skill_name/SKILL.md
+    for (const folderPath of folders) {
+      const skillFilePath = `${folderPath}/SKILL.md`;
+      try {
+        if (!(await app.vault.adapter.exists(skillFilePath))) continue;
+        const content = await app.vault.adapter.read(skillFilePath);
+        const skill = parseSKILL(content, skillFilePath);
+        if (skill) registerSkill(skill, false);
+      } catch {
+        console.warn(`ogstack: could not read skill at ${skillFilePath}`);
       }
     }
   }
@@ -185,7 +191,7 @@ export function createSkillLoader(
 
   return {
     async loadAll() {
-      await loadBuiltinSkills();
+      loadBuiltinSkills();
       await loadCustomSkills();
     },
     getRegisteredSkills() {
@@ -206,5 +212,11 @@ export function createSkillLoader(
 }
 
 function isCustomSkillFile(path: string): boolean {
-  return path.startsWith(CUSTOM_SKILLS_FOLDER) && path.endsWith("SKILL.md");
+  if (!path.startsWith(CUSTOM_SKILLS_FOLDER + "/")) return false;
+  const rel = path.slice(CUSTOM_SKILLS_FOLDER.length + 1);
+  // Flat: _agent/skill.md (no subdirectory)
+  if (!rel.includes("/") && rel.endsWith(".md")) return true;
+  // Folder-based: _agent/skill_name/SKILL.md
+  if (rel.endsWith("/SKILL.md")) return true;
+  return false;
 }

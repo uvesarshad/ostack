@@ -134,7 +134,11 @@ export class Vault {
 export class Workspace {
   getActiveFile = vi.fn().mockReturnValue(null);
   getActiveViewOfType = vi.fn().mockReturnValue(null);
-  getLeaf = vi.fn().mockReturnValue({ openFile: vi.fn() });
+  getLeaf = vi.fn().mockReturnValue({ openFile: vi.fn(), setViewState: vi.fn().mockResolvedValue(undefined) });
+  getLeavesOfType = vi.fn().mockReturnValue([]);
+  getRightLeaf = vi.fn().mockReturnValue({ setViewState: vi.fn().mockResolvedValue(undefined) });
+  revealLeaf = vi.fn();
+  on = vi.fn().mockReturnValue({ id: "mock-workspace-event" });
 }
 
 export class MetadataCache {
@@ -158,6 +162,44 @@ export class TFile {
     this.parent = null;
   }
 }
+
+export class Modal {
+  contentEl: HTMLElement;
+  modalEl: HTMLElement;
+  app: App;
+  constructor(app: App) {
+    this.app = app;
+    this.contentEl = mockEl();
+    this.modalEl = mockEl();
+  }
+  open = vi.fn();
+  close = vi.fn();
+  onOpen(): void {}
+  onClose(): void {}
+}
+
+export class ItemView {
+  containerEl: HTMLElement;
+  app: App;
+  leaf: WorkspaceLeaf;
+  constructor(leaf: WorkspaceLeaf) {
+    this.leaf = leaf;
+    this.app = new App();
+    this.containerEl = mockEl();
+  }
+  register = vi.fn();
+  registerEvent = vi.fn();
+}
+
+export class WorkspaceLeaf {
+  view: ItemView | null = null;
+  detach = vi.fn();
+  setViewState = vi.fn().mockResolvedValue(undefined);
+}
+
+export const MarkdownRenderer = {
+  render: vi.fn().mockResolvedValue(undefined),
+};
 
 export class MarkdownView {
   editor: Editor;

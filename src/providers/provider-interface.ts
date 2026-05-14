@@ -4,9 +4,15 @@ import { GeminiProvider } from "./gemini";
 import { OllamaProvider } from "./ollama";
 import { OpenAIProvider } from "./openai";
 
+export interface LLMMessage {
+  role: "user" | "assistant";
+  content: string;
+}
+
 export interface LLMRequest {
   systemPrompt: string;
-  userMessage: string;
+  userMessage?: string; // single-turn; ignored when messages is provided
+  messages?: LLMMessage[]; // multi-turn conversation history
   model?: string;
 }
 

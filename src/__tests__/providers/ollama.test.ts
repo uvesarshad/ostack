@@ -2,13 +2,16 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import { OllamaProvider } from "../../providers/ollama";
 import { requestUrl } from "obsidian";
 
+const chatResponse = (content: string) =>
+  JSON.stringify({ message: { role: "assistant", content } });
+
 describe("OllamaProvider", () => {
   afterEach(() => vi.clearAllMocks());
 
   it("yields the full response as a single chunk", async () => {
     vi.mocked(requestUrl).mockResolvedValue({
       status: 200,
-      text: JSON.stringify({ response: "The full answer from Ollama." }),
+      text: chatResponse("The full answer from Ollama."),
       json: {},
       headers: {},
       arrayBuffer: new ArrayBuffer(0),
@@ -22,6 +25,31 @@ describe("OllamaProvider", () => {
 
     expect(tokens).toHaveLength(1);
     expect(tokens[0]).toBe("The full answer from Ollama.");
+  });
+
+  it("supports multi-turn messages", async () => {
+    vi.mocked(requestUrl).mockResolvedValue({
+      status: 200,
+      text: chatResponse("Follow-up answer."),
+      json: {},
+      headers: {},
+      arrayBuffer: new ArrayBuffer(0),
+    });
+
+    const provider = new OllamaProvider("http://localhost:11434", "llama3.2");
+    const tokens: string[] = [];
+    for await (const t of provider.stream({
+      systemPrompt: "sys",
+      messages: [
+        { role: "user", content: "Hello" },
+        { role: "assistant", content: "Hi!" },
+        { role: "user", content: "Follow up" },
+      ],
+    })) {
+      tokens.push(t);
+    }
+
+    expect(tokens[0]).toBe("Follow-up answer.");
   });
 
   it("throws when Ollama is not running (requestUrl rejects)", async () => {

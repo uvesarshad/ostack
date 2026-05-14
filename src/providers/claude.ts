@@ -20,7 +20,9 @@ export class ClaudeProvider implements LLMProvider {
           model: this.model,
           max_tokens: 4096,
           system: request.systemPrompt,
-          messages: [{ role: "user", content: request.userMessage }],
+          messages: request.messages
+            ? request.messages.map((m) => ({ role: m.role, content: m.content }))
+            : [{ role: "user", content: request.userMessage ?? "" }],
           stream: true,
         }),
         signal: controller.signal,

@@ -5,7 +5,7 @@ export class OllamaProvider implements LLMProvider {
   constructor(private host: string, private model: string) {}
 
   async *stream(request: LLMRequest): AsyncGenerator<string, void, unknown> {
-    const url = `${this.host.replace(/\/$/, "")}/api/generate`;
+    const url = `${this.host.replace(/\/$/, "")}/api/chat`;
 
     let result: Awaited<ReturnType<typeof requestUrl>>;
     try {
@@ -15,7 +15,12 @@ export class OllamaProvider implements LLMProvider {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           model: this.model,
-          prompt: `${request.systemPrompt}\n\n${request.userMessage}`,
+          messages: [
+            { role: "system", content: request.systemPrompt },
+            ...(request.messages
+              ? request.messages.map((m) => ({ role: m.role, content: m.content }))
+              : [{ role: "user", content: request.userMessage ?? "" }]),
+          ],
           stream: false,
         }),
       });
@@ -35,8 +40,9 @@ export class OllamaProvider implements LLMProvider {
     }
 
     const p = parsed as Record<string, unknown>;
-    if (typeof p.response === "string") {
-      yield p.response;
+    const message = p.message as Record<string, unknown> | undefined;
+    if (typeof message?.content === "string") {
+      yield message.content;
     }
   }
 }

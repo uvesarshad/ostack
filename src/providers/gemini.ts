@@ -18,9 +18,12 @@ export class GeminiProvider implements LLMProvider {
           system_instruction: {
             parts: [{ text: request.systemPrompt }],
           },
-          contents: [
-            { role: "user", parts: [{ text: request.userMessage }] },
-          ],
+          contents: request.messages
+            ? request.messages.map((m) => ({
+                role: m.role === "assistant" ? "model" : "user",
+                parts: [{ text: m.content }],
+              }))
+            : [{ role: "user", parts: [{ text: request.userMessage ?? "" }] }],
         }),
         signal: controller.signal,
       });

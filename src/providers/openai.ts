@@ -19,7 +19,9 @@ export class OpenAIProvider implements LLMProvider {
           model: this.model,
           messages: [
             { role: "system", content: request.systemPrompt },
-            { role: "user", content: request.userMessage },
+            ...(request.messages
+              ? request.messages.map((m) => ({ role: m.role, content: m.content }))
+              : [{ role: "user", content: request.userMessage ?? "" }]),
           ],
           stream: true,
         }),
