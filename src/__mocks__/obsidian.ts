@@ -99,6 +99,21 @@ export class Notice {
   setMessage(_msg: string): void {}
 }
 
+// Minimal Component stub — BarChat extends this for Obsidian's lifecycle hooks.
+// We only need the class to exist; the methods are no-ops in tests.
+export class Component {
+  load = vi.fn();
+  unload = vi.fn();
+  onload(): void {}
+  onunload(): void {}
+  addChild<T>(child: T): T { return child; }
+  removeChild<T>(child: T): T { return child; }
+  register = vi.fn();
+  registerEvent = vi.fn();
+  registerDomEvent = vi.fn();
+  registerInterval = vi.fn();
+}
+
 export class App {
   vault: Vault;
   workspace: Workspace;

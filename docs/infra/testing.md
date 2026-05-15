@@ -4,7 +4,7 @@
 
 ## Overview
 
-The project uses Vitest for unit and integration testing. Tests run in a JSDOM-backed Node environment with a hand-rolled Obsidian API mock — no Electron, no real vault, no network. Current count: **161 tests across 17 files**.
+The project uses Vitest for unit and integration testing. Tests run in a JSDOM-backed Node environment with a hand-rolled Obsidian API mock — no Electron, no real vault, no network. Current count: **225 tests across 21 files**.
 
 ## Test Structure
 
@@ -12,6 +12,7 @@ The project uses Vitest for unit and integration testing. Tests run in a JSDOM-b
 | File | Surface |
 |---|---|
 | `agent-loop.test.ts` | Streaming tool-use loop, round limits, write-gate refusal, abort. |
+| `bar-chat.test.ts` | Pure-logic helpers: `extractAsks`, `stripAsks`, `formatToolInput`, truncation, `isLocalOrCliProvider`, `formatProviderError`. |
 | `chat-store.test.ts` | Sidecar markdown serialization, round-trip, legacy `data.json` migration, sticky agent. |
 | `context-builder.test.ts` | BFS, scoring, token budget, framing-tag defang. |
 | `context-scout.test.ts` | Scout result parsing, threshold-based summary-only mode. |
@@ -19,6 +20,7 @@ The project uses Vitest for unit and integration testing. Tests run in a JSDOM-b
 | `main.test.ts` | Plugin lifecycle and command registration. |
 | `mention-resolver.test.ts` | `[[Wiki Link]]` resolution + dedupe + framing defang. |
 | `output-router.test.ts` | Inline vs new-note routing. |
+| `sidebar-view.test.ts` | `relativeTime` formatter. |
 | `skill-loader.test.ts` | YAML parsing, `max_rounds` clamping, frontmatter edge cases. |
 | `vault-tools.test.ts` | Each tool's behavior plus the write-gate. |
 | `yaml-mini.test.ts` | Frontmatter parser (quotes, comments, duplicate keys, etc.). |
@@ -27,8 +29,9 @@ The project uses Vitest for unit and integration testing. Tests run in a JSDOM-b
 | File | Surface |
 |---|---|
 | `claude.test.ts` | SSE parsing, `streamWithTools`, timeout, caller-abort. |
-| `cli.test.ts` | `isSafeCliPath` + `isSafeModelName` validators. |
-| `gemini.test.ts`, `openai.test.ts`, `ollama.test.ts` | SSE / NDJSON parsing, error shapes. |
+| `cli.test.ts` | `isSafeCliPath`, `isSafeModelName`, `buildPrompt`, `buildArgs`. |
+| `gemini.test.ts`, `openai.test.ts`, `ollama.test.ts`, `grok.test.ts` | SSE / NDJSON parsing, error shapes, auth headers. |
+| `provider-interface.test.ts` | `getProvider` + `getScoutProvider` factories, including `scoutProvider: "inherit"` semantics. |
 | `retry.test.ts` | `fetchWithRetry` honoring `Retry-After`, 429/503 only, max-retries cap. |
 
 ### Mocks (`src/__mocks__/obsidian.ts`)
@@ -86,9 +89,10 @@ npx vitest run --reporter=basic # quieter output
 
 ## What's NOT Tested
 
-- `bar-chat.ts`, `sidebar-view.ts` — DOM-heavy UI surfaces. Helpers (mention resolver, YAML parser, retry, vault tools) are unit-tested in isolation; full DOM flows would need Playwright.
-- `floating-input.ts`, `welcome-modal.ts`, `manage-skills-modal.ts` — visual-only modals.
-- `cli.ts` subprocess spawning — only the validators are unit-tested. End-to-end CLI testing requires the actual binaries installed.
+- **DOM flows in `bar-chat.ts` and `sidebar-view.ts`** — class methods that touch the DOM, suggest popups, scroll behavior. Pure-logic helpers from both are unit-tested; full DOM flows would need Playwright.
+- **`floating-input.ts`, `welcome-modal.ts`, `manage-skills-modal.ts`** — visual-only modals.
+- **`cli.ts` subprocess spawning** — validators, `buildPrompt`, `buildArgs` are unit-tested. End-to-end CLI testing requires the actual binaries installed.
+- **`chat-runner.ts`** — exercised indirectly via integration paths; no direct unit tests.
 
 ## AGENT AVOID
 

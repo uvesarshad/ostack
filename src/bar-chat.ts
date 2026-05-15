@@ -1135,7 +1135,7 @@ type SuggestEntry =
   | { kind: "skill"; skill: Skill }
   | { kind: "note"; file: TFile };
 
-function extractAsks(text: string): string[] {
+export function extractAsks(text: string): string[] {
   const out: string[] = [];
   ASK_PATTERN.lastIndex = 0;
   let m: RegExpExecArray | null;
@@ -1146,7 +1146,7 @@ function extractAsks(text: string): string[] {
   return out;
 }
 
-function formatToolInputForLog(input: Record<string, unknown>): string {
+export function formatToolInputForLog(input: Record<string, unknown>): string {
   const keys = Object.keys(input);
   if (keys.length === 0) return "";
   return keys
@@ -1158,12 +1158,12 @@ function formatToolInputForLog(input: Record<string, unknown>): string {
     .join(", ");
 }
 
-function truncateForLog(s: string, n: number): string {
+export function truncateForLog(s: string, n: number): string {
   if (s.length <= n) return s;
   return s.slice(0, n - 1) + "…";
 }
 
-function formatToolInput(input: Record<string, unknown>): string {
+export function formatToolInput(input: Record<string, unknown>): string {
   const keys = Object.keys(input);
   if (keys.length === 0) return "";
   return keys
@@ -1175,7 +1175,7 @@ function formatToolInput(input: Record<string, unknown>): string {
     .join(", ");
 }
 
-function truncate(s: string, n: number): string {
+export function truncate(s: string, n: number): string {
   return s.length > n ? s.slice(0, n - 1) + "…" : s;
 }
 
@@ -1189,15 +1189,15 @@ function getVaultBasePath(app: App): string | undefined {
   return undefined;
 }
 
-function stripAsks(text: string): string {
+export function stripAsks(text: string): string {
   return text.replace(ASK_PATTERN, "").trim();
 }
 
-function isLocalOrCliProvider(p: string): boolean {
+export function isLocalOrCliProvider(p: string): boolean {
   return p === "ollama" || p === "claude-cli" || p === "codex-cli" || p === "gemini-cli";
 }
 
-function formatProviderError(
+export function formatProviderError(
   e: { status?: number; body?: string; message?: string; name?: string },
   provider: string
 ): string {

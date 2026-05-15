@@ -14,7 +14,7 @@ ogstack is a vault-aware skill system for Obsidian that allows users to run AI-p
 - Core: TypeScript
 - Platform: Obsidian Plugin API (desktop-only — uses `child_process` for CLI providers)
 - Build: esbuild
-- Testing: Vitest (161 unit tests)
+- Testing: Vitest (225 unit tests)
 - LLM Integration: Native fetch API with Server-Sent Events (SSE) for streaming; Anthropic streaming tool-use for agent skills
 - State Management: Per-note chat sidecar files under `_agent/chats/`; settings in `.obsidian/plugins/ogstack/data.json`
 

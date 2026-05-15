@@ -511,7 +511,7 @@ export class OgstackSidebarView extends ItemView {
   }
 }
 
-function relativeTime(ts: number): string {
+export function relativeTime(ts: number): string {
   const diff = Date.now() - ts;
   const m = Math.floor(diff / 60_000);
   const h = Math.floor(diff / 3_600_000);

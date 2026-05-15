@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { isSafeCliPath, isSafeModelName } from "../../providers/cli";
+import { isSafeCliPath, isSafeModelName, buildPrompt, buildArgs } from "../../providers/cli";
 
 describe("isSafeCliPath", () => {
   it("accepts empty string (use PATH default)", () => {
@@ -71,5 +71,86 @@ describe("isSafeModelName", () => {
 
   it("rejects non-string input", () => {
     expect(isSafeModelName(null as unknown as string)).toBe(false);
+  });
+});
+
+describe("buildPrompt", () => {
+  it("wraps system prompt in <system> tags", () => {
+    const out = buildPrompt({ systemPrompt: "you are a poet", userMessage: "haiku" });
+    expect(out).toContain("<system>\nyou are a poet\n</system>");
+    expect(out).toContain("Human: haiku");
+  });
+
+  it("renders multi-turn history with Human/Assistant tags", () => {
+    const out = buildPrompt({
+      systemPrompt: "sys",
+      messages: [
+        { role: "user", content: "first" },
+        { role: "assistant", content: "reply" },
+        { role: "user", content: "second" },
+      ],
+    });
+    expect(out).toContain("Human: first");
+    expect(out).toContain("Assistant: reply");
+    expect(out).toContain("Human: second");
+    expect(out.indexOf("Human: first")).toBeLessThan(out.indexOf("Assistant: reply"));
+  });
+
+  it("omits the user line when neither userMessage nor messages is provided", () => {
+    const out = buildPrompt({ systemPrompt: "sys" });
+    expect(out).toContain("<system>");
+    expect(out).not.toMatch(/Human:|Assistant:/);
+  });
+
+  it("prefers messages over userMessage when both are given", () => {
+    const out = buildPrompt({
+      systemPrompt: "sys",
+      userMessage: "ignored",
+      messages: [{ role: "user", content: "kept" }],
+    });
+    expect(out).toContain("Human: kept");
+    expect(out).not.toContain("ignored");
+  });
+
+  it("omits system block when systemPrompt is empty", () => {
+    const out = buildPrompt({ systemPrompt: "", userMessage: "hi" });
+    expect(out).not.toContain("<system>");
+    expect(out).toContain("Human: hi");
+  });
+});
+
+describe("buildArgs", () => {
+  it("claude-cli passes -p and --output-format text", () => {
+    const args = buildArgs("claude-cli", "");
+    expect(args).toEqual(["-p", "--output-format", "text"]);
+  });
+
+  it("claude-cli appends --model when set", () => {
+    const args = buildArgs("claude-cli", "sonnet");
+    expect(args).toContain("--model");
+    expect(args[args.indexOf("--model") + 1]).toBe("sonnet");
+  });
+
+  it("codex-cli uses exec + sandbox read-only + json", () => {
+    const args = buildArgs("codex-cli", "gpt-5");
+    expect(args[0]).toBe("exec");
+    expect(args).toContain("--skip-git-repo-check");
+    expect(args).toContain("--json");
+    expect(args).toContain("--sandbox");
+    expect(args[args.indexOf("--sandbox") + 1]).toBe("read-only");
+    expect(args).toContain("--model");
+    expect(args[args.indexOf("--model") + 1]).toBe("gpt-5");
+  });
+
+  it("codex-cli omits --model when empty", () => {
+    const args = buildArgs("codex-cli", "");
+    expect(args).not.toContain("--model");
+  });
+
+  it("gemini-cli passes -p", () => {
+    const args = buildArgs("gemini-cli", "gemini-2.5-pro");
+    expect(args[0]).toBe("-p");
+    expect(args).toContain("--model");
+    expect(args[args.indexOf("--model") + 1]).toBe("gemini-2.5-pro");
   });
 });

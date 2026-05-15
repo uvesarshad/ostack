@@ -116,7 +116,7 @@ export function resolveBinary(binary: string): string {
 }
 
 // Each CLI accepts a single prompt. We flatten system + history + current message.
-function buildPrompt(req: LLMRequest): string {
+export function buildPrompt(req: LLMRequest): string {
   const lines: string[] = [];
   if (req.systemPrompt) {
     lines.push(`<system>\n${req.systemPrompt}\n</system>`);
@@ -132,7 +132,7 @@ function buildPrompt(req: LLMRequest): string {
   return lines.join("");
 }
 
-function buildArgs(kind: CliKind, model: string): string[] {
+export function buildArgs(kind: CliKind, model: string): string[] {
   switch (kind) {
     case "claude-cli":
       // Claude Code headless mode reads prompt from stdin when -p is empty

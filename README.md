@@ -331,7 +331,7 @@ The active note is always included in full regardless of budget.
 ```bash
 npm install
 npm run dev        # watch mode — rebuilds on save
-npm test           # 161 unit tests
+npm test           # 225 unit tests
 npm run build      # production bundle → main.js
 ```
 
