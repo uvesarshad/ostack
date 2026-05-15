@@ -37,8 +37,11 @@ No copy-paste. No context switching. The AI already knows what you know.
 | `gs: Research` | Synthesizes linked notes into a structured research brief |
 | `gs: Campaign` | Turns product and audience notes into a full campaign plan |
 | `gs: Plan` | Drafts a project or sprint plan from goals and context notes |
+| `gs: Plan Interactive` | Same as `/plan` but asks clarifying questions if scope is ambiguous |
 | `gs: Outline` | Builds a document outline from linked research |
 | `gs: Review` | Editorial critique and improvement suggestions for the active note |
+| `gs: Summarize` | One-paragraph distillation of the active note |
+| `gs: Vault Agent` | Tool-using agent that explores and (opt-in) edits the vault |
 
 **Custom skills** — drop a `SKILL.md` file into `_agent/your-skill/` inside your vault (or use the flat form `_agent/your-skill.md`) and it registers as a live `gs:` command within 2 seconds. No restart, no code, no CLI required. You can also import skills from any GitHub repo via Command Palette → **ogstack: Import skill from GitHub**.
 
@@ -60,7 +63,7 @@ ogstack uses a **two-model pipeline** on every skill run.
 
 The main model is your primary LLM — Claude, GPT-4o, Gemini, or a local Ollama model. It receives the full assembled vault context and your skill's system prompt, then streams the response directly into your note. You configure which model in Settings → ogstack → Provider.
 
-Claude, OpenAI, and Gemini stream token-by-token via SSE so output appears in real time. Ollama returns the full response at once (streaming is a v2 feature).
+Claude, OpenAI, Gemini, Grok, and Ollama all stream token-by-token so output appears in real time. CLI providers (`claude-cli`, `codex-cli`, `gemini-cli`) stream from the subprocess's stdout.
 
 ### Context Scout
 
@@ -217,6 +220,10 @@ Save the file. The command `gs: Competitor Analysis` appears in the palette with
 | `output` | no | global setting | `inline` inserts at cursor · `new-note` creates a linked note |
 | `max_depth` | no | `3` | How many link-hops to walk from the active note (max 5) |
 | `max_tokens` | no | global setting | Token budget for linked notes (active note always included in full) |
+| `mode` | no | `oneshot` | `oneshot` or `interactive` (latter can pause with `<ASK>…</ASK>` tags to ask clarifying questions) |
+| `agent` | no | `false` | When `true`, runs through Claude's tool-use loop with vault tools |
+| `allowed_tools` | no | all tools | Allow-list for agent skills: `[read_note, search_vault, …]` |
+| `max_rounds` | no | `10` | Agent tool-call ceiling (hard cap 40). Higher = more tool rounds before bail. |
 
 ### The `{{VAULT_CONTEXT}}` placeholder
 
@@ -261,7 +268,7 @@ In addition to the one-shot prompt-stuffing skills above, ogstack ships an exper
 - `append_note(path, content)` — append (gated by **Agent safety** setting)
 - `write_note(path, content)` — create/overwrite (gated by **Agent safety** setting)
 
-Define an agent skill in your own `_agent/<name>/SKILL.md` by adding `agent: true` and (optionally) an `allowed_tools` allow-list:
+Define an agent skill in your own `_agent/<name>/SKILL.md` by adding `agent: true` and (optionally) an `allowed_tools` allow-list and `max_rounds` ceiling:
 
 ```markdown
 ---
@@ -269,13 +276,22 @@ name: brief-from-tag
 description: Read all notes tagged with the given tag and summarise
 agent: true
 allowed_tools: [list_notes, read_note, search_vault]
+max_rounds: 20
 ---
 
 You are a research assistant. Use the tools to find every note that mentions
 the tag the user gives, read them, and synthesise a one-page brief…
 ```
 
+`max_rounds` caps how many tool-use turns the agent can take before the loop bails (default 10, hard ceiling 40). Use a higher value for skills that fan out across many notes.
+
+**Agent skills are conversational.** Once you run an agent skill in a chat, follow-up messages in that same chat continue the agent loop — the agent keeps its system prompt and tools across turns and can refer back to what it already explored. The title bar shows `· agent: /skill-name` while a session is sticky-agent. Click **+ New chat** to leave agent mode.
+
 Agent skills require the Claude API provider (or claude-cli / codex-cli which run their own tools natively). Other API providers will refuse to run the skill with a clear error.
+
+**File-write safety.** `write_note` and `append_note` return an error string ("agent file writes are disabled") unless you opt in via Settings → ogstack → Agent safety → **Allow agent file writes**. The agent surfaces the refusal back to you and offers the proposed change as a markdown block you can paste.
+
+**Tool output caps.** `read_note` caps at 12,000 chars per call; `search_vault` results cap at 4,000 chars. Truncated output ends with `[truncated: …]` so the agent knows there's more if it needs to ask.
 
 ---
 
@@ -315,7 +331,7 @@ The active note is always included in full regardless of budget.
 ```bash
 npm install
 npm run dev        # watch mode — rebuilds on save
-npm test           # 123 unit tests
+npm test           # 161 unit tests
 npm run build      # production bundle → main.js
 ```
 
@@ -324,6 +340,16 @@ npm run build      # production bundle → main.js
 To test against a real vault: copy or symlink the repo into `.obsidian/plugins/ogstack/` and enable the plugin. `npm run dev` rebuilds on save; reload with `Ctrl+R` in Obsidian.
 
 ---
+
+## Security
+
+See [SECURITY.md](SECURITY.md) for the full threat model and reporting guidance. TL;DR:
+
+- Imported skill names are sanitized before being used as file paths.
+- CLI provider subprocesses run with `shell: false`; settings inputs are validated against shell metacharacters.
+- Agent file writes are opt-in (Settings → Agent safety).
+- Agent tool outputs are size-capped to prevent context blow-out.
+- Note content interpolated into the vault context has its framing tags defanged to mitigate prompt-injection via crafted linked notes.
 
 ## License
 

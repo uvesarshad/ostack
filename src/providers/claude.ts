@@ -1,4 +1,5 @@
 import { LLMProvider, LLMRequest } from "./provider-interface";
+import { fetchWithRetry } from "./retry";
 
 // Anthropic content-block shapes for tool use (subset of the full schema).
 export type ClaudeContentBlock =
@@ -56,7 +57,7 @@ export class ClaudeProvider implements LLMProvider {
 
     let response: Response;
     try {
-      response = await fetch("https://api.anthropic.com/v1/messages", {
+      response = await fetchWithRetry("https://api.anthropic.com/v1/messages", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -72,7 +73,7 @@ export class ClaudeProvider implements LLMProvider {
           stream: true,
         }),
         signal: timeoutController.signal,
-      });
+      }, { signal: timeoutController.signal });
     } catch (err: unknown) {
       clearTimeout(timeoutId);
       signal?.removeEventListener("abort", onCallerAbort);
@@ -210,7 +211,7 @@ export class ClaudeProvider implements LLMProvider {
 
     let response: Response;
     try {
-      response = await fetch("https://api.anthropic.com/v1/messages", {
+      response = await fetchWithRetry("https://api.anthropic.com/v1/messages", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -227,7 +228,7 @@ export class ClaudeProvider implements LLMProvider {
           stream: true,
         }),
         signal: controller.signal,
-      });
+      }, { signal: controller.signal });
     } catch (err: unknown) {
       clearTimeout(timeout);
       if ((err as { name?: string }).name === "AbortError") {

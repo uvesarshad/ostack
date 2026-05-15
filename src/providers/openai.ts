@@ -1,4 +1,5 @@
 import { LLMProvider, LLMRequest } from "./provider-interface";
+import { fetchWithRetry } from "./retry";
 
 export class OpenAIProvider implements LLMProvider {
   constructor(private apiKey: string, private model: string) {}
@@ -9,7 +10,7 @@ export class OpenAIProvider implements LLMProvider {
 
     let response: Response;
     try {
-      response = await fetch("https://api.openai.com/v1/chat/completions", {
+      response = await fetchWithRetry("https://api.openai.com/v1/chat/completions", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -26,7 +27,7 @@ export class OpenAIProvider implements LLMProvider {
           stream: true,
         }),
         signal: controller.signal,
-      });
+      }, { signal: controller.signal });
     } catch (err: unknown) {
       clearTimeout(timeout);
       if ((err as { name?: string }).name === "AbortError") {

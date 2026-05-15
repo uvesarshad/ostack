@@ -13,7 +13,8 @@ export type AgentEvent =
   | { type: "text_delta"; text: string }
   | { type: "error"; message: string };
 
-const MAX_TOOL_ROUNDS = 10;
+const DEFAULT_MAX_TOOL_ROUNDS = 10;
+const HARD_MAX_TOOL_ROUNDS = 40;
 
 // Streaming agentic loop on top of Claude's tool-use API.
 //
@@ -35,9 +36,15 @@ export async function* runClaudeAgent(args: {
   // When false (default), write_note / append_note tools refuse to run.
   // See settings.allowAgentWrites.
   allowWrites?: boolean;
+  // Per-skill cap on tool rounds. Falls back to DEFAULT_MAX_TOOL_ROUNDS; an
+  // upper ceiling of HARD_MAX_TOOL_ROUNDS prevents a frontmatter typo from
+  // letting an agent loop indefinitely.
+  maxRounds?: number | null;
 }): AsyncGenerator<AgentEvent, void, unknown> {
   const { app, apiKey, model, systemPrompt, userMessage, priorMessages, allowedTools, signal } = args;
   const allowWrites = args.allowWrites ?? false;
+  const requested = args.maxRounds ?? DEFAULT_MAX_TOOL_ROUNDS;
+  const maxRounds = Math.max(1, Math.min(requested, HARD_MAX_TOOL_ROUNDS));
 
   const tools = resolveTools(allowedTools).map((t) => ({
     name: t.name,
@@ -53,7 +60,7 @@ export async function* runClaudeAgent(args: {
   }
   messages.push({ role: "user", content: userMessage });
 
-  for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+  for (let round = 0; round < maxRounds; round++) {
     if (signal?.aborted) return;
 
     // Collect this turn's assistant content blocks so we can record them
@@ -133,5 +140,8 @@ export async function* runClaudeAgent(args: {
     messages.push({ role: "user", content: toolResultBlocks });
   }
 
-  yield { type: "error", message: `Agent stopped after ${MAX_TOOL_ROUNDS} tool rounds (loop guard).` };
+  yield {
+    type: "error",
+    message: `Agent gave up after ${maxRounds} tool rounds. Try a narrower task, raise max_rounds in the skill's frontmatter (current cap: ${HARD_MAX_TOOL_ROUNDS}), or use a more capable model.`,
+  };
 }

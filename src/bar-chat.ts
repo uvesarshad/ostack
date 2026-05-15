@@ -1,4 +1,4 @@
-import { App, MarkdownRenderer, MarkdownView, Component, TFile } from "obsidian";
+import { App, MarkdownRenderer, MarkdownView, Component, Notice, TFile } from "obsidian";
 import type { Skill } from "./skill-loader";
 import type { GStackSettings } from "./settings";
 import type { ProgressReporter } from "./floating-input";
@@ -51,12 +51,18 @@ export class BarChat extends Component implements ProgressReporter {
   private streamingContent = "";
   private currentSkill: Skill | null = null;
   private currentSystemPrompt = "";
+  // The active-note path at the time currentSystemPrompt was built. We compare
+  // this against the current active file before each free-chat turn — if the
+  // user switched notes, the system prompt is stale and needs rebuilding so
+  // the model sees the right vault context.
+  private currentSystemPromptForNote: string | null = null;
   private abortController: AbortController | null = null;
 
   // Suggestions
   private filteredEntries: SuggestEntry[] = [];
   private selectedSuggestIdx = -1;
   private triggerPos = -1;
+  private suggestDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
   private config: BarChatConfig;
   private storeUnsubscribe: (() => void) | null = null;
@@ -72,6 +78,8 @@ export class BarChat extends Component implements ProgressReporter {
     this.suggestPopup = document.createElement("div");
     this.suggestPopup.className = "gstack-bar2-popup";
     this.suggestPopup.style.display = "none";
+    this.suggestPopup.setAttribute("role", "listbox");
+    this.suggestPopup.setAttribute("aria-label", "Skill and note suggestions");
     this.container.appendChild(this.suggestPopup);
 
     this.card = document.createElement("div");
@@ -138,6 +146,7 @@ export class BarChat extends Component implements ProgressReporter {
     this.abortController?.abort();
     this.storeUnsubscribe?.();
     this.activeLeafUnregister?.();
+    if (this.suggestDebounceTimer) clearTimeout(this.suggestDebounceTimer);
     this.container.remove();
   }
 
@@ -218,8 +227,13 @@ export class BarChat extends Component implements ProgressReporter {
     this.renderConversation();
 
     if (skill.agent) {
+      // Stick the agent skill on the session so follow-up user messages
+      // continue the agent loop instead of falling back to plain chat.
+      await this.config.chatStore.setAgentSkill(this.currentSessionId!, skill.name);
       await this.runAgentTurn(skill);
     } else {
+      // Plain skill — clear any previous agent stickiness on this session.
+      await this.config.chatStore.setAgentSkill(this.currentSessionId!, undefined);
       await this.streamAssistantTurn();
     }
 
@@ -336,7 +350,11 @@ export class BarChat extends Component implements ProgressReporter {
   // For the agent-loop path we collect structured tool calls and persist them
   // separately from the assistant text so the bubble re-renders correctly
   // after a reload.
-  private async runAgentTurn(skill: Skill): Promise<void> {
+  // `kickoffMessage` is what the model sees as the latest user turn. For the
+  // initial skill invocation this is "Run skill: /name" (default). For follow-up
+  // turns in an already-active agent session, the caller passes the user's
+  // actual new message so the agent continues the conversation naturally.
+  private async runAgentTurn(skill: Skill, kickoffMessage?: string): Promise<void> {
     if (!this.currentSessionId) return;
 
     const provider = this.config.settings.provider;
@@ -380,11 +398,12 @@ export class BarChat extends Component implements ProgressReporter {
         apiKey: this.config.settings.apiKey,
         model: this.config.settings.model || "claude-sonnet-4-6",
         systemPrompt: this.currentSystemPrompt,
-        userMessage: `Run skill: /${skill.name}`,
-        priorMessages: this.buildLLMHistory().slice(0, -1), // exclude the just-added /skill turn
+        userMessage: kickoffMessage ?? `Run skill: /${skill.name}`,
+        priorMessages: this.buildLLMHistory().slice(0, -1), // exclude the latest user turn we're sending as userMessage
         allowedTools: skill.allowedTools,
         signal: controller.signal,
         allowWrites: this.config.settings.allowAgentWrites,
+        maxRounds: skill.maxRounds,
       });
 
       for await (const evt of events) {
@@ -410,7 +429,16 @@ export class BarChat extends Component implements ProgressReporter {
             inflight.delete(evt.id);
           }
         } else if (evt.type === "error") {
-          textEl.createSpan({ text: `✕ ${evt.message}`, cls: "gstack-bar2-msg-error" });
+          // Round-limit exhaustion gets a structured block so the user sees
+          // a clear "agent gave up" message instead of a tiny red line.
+          const isLimit = /gave up after \d+ tool rounds/.test(evt.message);
+          if (isLimit) {
+            const block = textEl.createDiv({ cls: "gstack-bar2-msg-error gstack-bar2-agent-limit" });
+            block.createDiv({ text: "⚠ Agent stopped at the tool-round limit.", cls: "gstack-bar2-agent-limit-title" });
+            block.createDiv({ text: evt.message, cls: "gstack-bar2-agent-limit-detail" });
+          } else {
+            textEl.createSpan({ text: `✕ ${evt.message}`, cls: "gstack-bar2-msg-error" });
+          }
         }
         this.scrollToBottom();
       }
@@ -427,7 +455,7 @@ export class BarChat extends Component implements ProgressReporter {
         textChunks.join(""),
         toolCalls.length > 0 ? toolCalls : undefined
       );
-      this.setState(controller.signal.aborted ? "done" : "done");
+      this.setState("done");
       await this.renderConversation();
     } catch (err: unknown) {
       const msg = (err as Error).message ?? "Agent failed";
@@ -461,6 +489,7 @@ export class BarChat extends Component implements ProgressReporter {
   private async renderConversation(): Promise<void> {
     const session = this.currentSession();
     this.conversationEl.empty();
+    this.updateTitle();
 
     if (!session || session.messages.length === 0) {
       this.applyState();
@@ -594,26 +623,38 @@ export class BarChat extends Component implements ProgressReporter {
 
     const newBtn = this.toolbar.createEl("button", { cls: "gstack-bar2-toolbar-btn", text: "+ New chat" });
     newBtn.title = "Start a new conversation for the active note";
+    newBtn.setAttribute("aria-label", "Start new chat");
     newBtn.addEventListener("click", () => this.startNewChat());
 
     const compactBtn = this.toolbar.createEl("button", { cls: "gstack-bar2-toolbar-btn", text: "Compact ↑" });
     compactBtn.title = "Summarize older messages to save tokens";
+    compactBtn.setAttribute("aria-label", "Compact conversation");
     compactBtn.addEventListener("click", () => this.compactConversation());
 
     const openSidebarBtn = this.toolbar.createEl("button", { cls: "gstack-bar2-toolbar-btn", text: "Open in sidebar" });
     openSidebarBtn.title = "Continue this chat in the right sidebar";
+    openSidebarBtn.setAttribute("aria-label", "Open chat in sidebar");
     openSidebarBtn.addEventListener("click", () => this.openInSidebar());
 
     const closeBtn = this.toolbar.createEl("button", { cls: "gstack-bar2-toolbar-btn gstack-bar2-toolbar-close", text: "×" });
     closeBtn.title = "Hide";
+    closeBtn.setAttribute("aria-label", "Close chat");
     closeBtn.addEventListener("click", () => this.hide());
   }
 
   private updateTitle(): void {
     const session = this.currentSession();
     if (!this.titleEl) return;
-    const title = session?.noteTitle ?? "ogstack";
-    this.titleEl.textContent = title === "Scratch" ? "Scratch chat" : title;
+    const baseTitle = session?.noteTitle ?? "ogstack";
+    const display = baseTitle === "Scratch" ? "Scratch chat" : baseTitle;
+    this.titleEl.empty();
+    this.titleEl.createSpan({ text: display });
+    if (session?.agentSkillName) {
+      this.titleEl.createSpan({
+        text: ` · agent: /${session.agentSkillName}`,
+        cls: "gstack-bar2-toolbar-agent-tag",
+      });
+    }
   }
 
   private async startNewChat(): Promise<void> {
@@ -625,6 +666,10 @@ export class BarChat extends Component implements ProgressReporter {
     this.currentSessionId = session.id;
     this.currentSkill = null;
     this.currentSystemPrompt = "";
+    this.currentSystemPromptForNote = null;
+    // Fresh session — no sticky agent (createSession returns one with no
+    // agentSkillName), but be explicit in case the in-memory mirror drifts.
+    await this.config.chatStore.setAgentSkill(session.id, undefined);
     this.setState("idle");
     this.updateTitle();
     await this.renderConversation();
@@ -650,18 +695,26 @@ export class BarChat extends Component implements ProgressReporter {
     this.inputEl.rows = 1;
     this.inputEl.addEventListener("input", () => {
       this.autoResize();
-      this.handleInputForSuggest();
+      // Debounce the suggest popup rebuild — for vaults with thousands of
+      // notes, the @-mention filter is the slow path, and rebuilding on every
+      // keystroke causes noticeable jank.
+      if (this.suggestDebounceTimer) clearTimeout(this.suggestDebounceTimer);
+      this.suggestDebounceTimer = setTimeout(() => this.handleInputForSuggest(), 70);
     });
     this.inputEl.addEventListener("keydown", (e) => this.handleKeydown(e));
 
     this.sendBtn = this.inputRow.createEl("button", { cls: "gstack-bar2-send", text: "↑" }) as HTMLButtonElement;
     this.sendBtn.title = "Send (Enter)";
+    this.sendBtn.setAttribute("aria-label", "Send message");
     this.sendBtn.addEventListener("click", () => this.handleSend());
 
     this.stopBtn = this.inputRow.createEl("button", { cls: "gstack-bar2-stop", text: "■" }) as HTMLButtonElement;
     this.stopBtn.title = "Stop";
+    this.stopBtn.setAttribute("aria-label", "Stop generation");
     this.stopBtn.style.display = "none";
     this.stopBtn.addEventListener("click", () => this.stopStream());
+
+    this.inputEl.setAttribute("aria-label", "Chat message input");
   }
 
   private autoResize(): void {
@@ -695,10 +748,35 @@ export class BarChat extends Component implements ProgressReporter {
     const activeFile = this.config.app.workspace.getActiveFile();
     await this.ensureSession(activeFile);
 
-    // Build free-chat system prompt (lazy, only first turn of a fresh session)
     const session = this.currentSession();
-    if (session && session.messages.length === 0) {
+
+    // If this session is sticky-agent (the user previously ran an agent skill
+    // and hasn't switched away), continue the agent loop with the new user
+    // text as the kickoff message instead of falling back to plain chat.
+    const stuckAgentSkillName = session?.agentSkillName;
+    if (stuckAgentSkillName) {
+      const agentSkill = this.config.getSkills().get(stuckAgentSkillName);
+      if (agentSkill) {
+        await this.config.chatStore.addMessage(this.currentSessionId!, "user", text);
+        await this.renderConversation();
+        // currentSystemPrompt was set when the skill first ran and still holds
+        // its assembled vault context. Re-running runSkill would rebuild it
+        // with the current active note — preferable but expensive on every
+        // turn; revisit when token budgets become an issue.
+        await this.runAgentTurn(agentSkill, text);
+        return;
+      }
+    }
+
+    // Build free-chat system prompt on the first turn, OR when the user has
+    // switched to a different note since the last build. Skill-driven prompts
+    // (currentSkill set) own their own context and shouldn't be overwritten.
+    const activePath = activeFile?.path ?? null;
+    const isFreeChat = !this.currentSkill;
+    const noteChanged = isFreeChat && this.currentSystemPromptForNote !== activePath;
+    if (isFreeChat && (session?.messages.length === 0 || noteChanged)) {
       this.currentSystemPrompt = await this.buildFreeChatSystemPrompt();
+      this.currentSystemPromptForNote = activePath;
     }
 
     // Resolve @[[Note]] mentions in the user message and append their content
@@ -806,6 +884,8 @@ export class BarChat extends Component implements ProgressReporter {
     this.suggestPopup.style.display = "";
     entries.forEach((entry, i) => {
       const item = this.suggestPopup.createDiv({ cls: "gstack-bar2-popup-item" + (i === this.selectedSuggestIdx ? " selected" : "") });
+      item.setAttribute("role", "option");
+      item.setAttribute("aria-selected", String(i === this.selectedSuggestIdx));
       if (entry.kind === "skill") {
         item.createEl("span", { text: `/${entry.skill.name}`, cls: "gstack-bar2-popup-name" });
         item.createEl("span", { text: entry.skill.description, cls: "gstack-bar2-popup-desc" });
@@ -822,7 +902,9 @@ export class BarChat extends Component implements ProgressReporter {
 
   private updateSuggestSelection(): void {
     this.suggestPopup.querySelectorAll(".gstack-bar2-popup-item").forEach((el, i) => {
-      el.classList.toggle("selected", i === this.selectedSuggestIdx);
+      const isSel = i === this.selectedSuggestIdx;
+      el.classList.toggle("selected", isSel);
+      el.setAttribute("aria-selected", String(isSel));
     });
   }
 
@@ -910,11 +992,49 @@ export class BarChat extends Component implements ProgressReporter {
     return history;
   }
 
+  // Route insert/append to the note the chat session is bound to, NOT whatever
+  // note happens to be focused right now. Users often click between notes while
+  // an assistant reply is on screen — without this routing, "Insert at cursor"
+  // would silently dump the content into the wrong file.
   private async insertIntoNote(content: string, mode: "cursor" | "end"): Promise<void> {
-    const view = this.config.app.workspace.getActiveViewOfType(MarkdownView);
-    const editor = view?.editor;
+    const session = this.currentSession();
+    const targetPath = session?.notePath;
+    const isScratch = !targetPath || targetPath === SCRATCH_NOTE_PATH;
+
+    let editor: import("obsidian").Editor | null = null;
+    let openedTargetNote = false;
+
+    if (!isScratch && targetPath) {
+      const targetFile = this.config.app.vault.getAbstractFileByPath(targetPath);
+      if (targetFile instanceof TFile) {
+        // Already open and focused?
+        const activeView = this.config.app.workspace.getActiveViewOfType(MarkdownView);
+        if (activeView && activeView.file?.path === targetPath) {
+          editor = activeView.editor;
+        } else {
+          // Open the note in the active leaf to bring it into focus before edit.
+          const leaf = this.config.app.workspace.getLeaf(false);
+          try {
+            await leaf.openFile(targetFile);
+            openedTargetNote = true;
+            const reopenedView = this.config.app.workspace.getActiveViewOfType(MarkdownView);
+            editor = reopenedView?.editor ?? null;
+          } catch {
+            editor = null;
+          }
+        }
+      }
+    }
+
+    // Scratch session or target file gone — fall back to the currently active
+    // editor (caller's choice if they want to paste somewhere else).
+    if (!editor) {
+      editor = this.config.app.workspace.getActiveViewOfType(MarkdownView)?.editor ?? null;
+    }
+
     if (!editor) {
       await navigator.clipboard.writeText(content);
+      new Notice("ogstack: no editor open — content copied to clipboard");
       return;
     }
 
@@ -925,6 +1045,11 @@ export class BarChat extends Component implements ProgressReporter {
       const lastLineLen = editor.getLine(lastLine).length;
       const insert = (lastLineLen > 0 ? "\n\n" : "") + content;
       editor.replaceRange(insert, { line: lastLine, ch: lastLineLen });
+    }
+
+    if (openedTargetNote && !isScratch && targetPath) {
+      const name = targetPath.split("/").pop()?.replace(/\.md$/, "") ?? targetPath;
+      new Notice(`ogstack: inserted into ${name}`);
     }
   }
 
@@ -961,8 +1086,23 @@ export class BarChat extends Component implements ProgressReporter {
     const toSummarize = session.messages.slice(0, -2);
     const recent = session.messages.slice(-2);
 
-    const text = toSummarize.map((m) => `${m.role.toUpperCase()}: ${m.content}`).join("\n\n");
-    const compactionPrompt = `Summarize the following conversation into a compact set of key points. Preserve all decisions, facts the user shared, and conclusions reached. Be brief.\n\n${text}`;
+    // Use unique [turn-N <role>] / [/turn-N] sentinels so a message that
+    // happens to contain a literal "USER:" line can't confuse the model about
+    // where turns start. Agent tool calls are surfaced as a [tool: ...] line
+    // per call so the compacted history retains what the agent already
+    // explored — otherwise an agent skill that read 10 notes pre-compaction
+    // would re-discover them all after.
+    const text = toSummarize
+      .map((m, i) => {
+        const tag = `turn-${i + 1} ${m.role}`;
+        const toolLines = (m.toolCalls ?? [])
+          .map((t) => `  [tool: ${t.name}(${formatToolInputForLog(t.input)}) → ${t.isError ? "ERROR" : truncateForLog(t.output, 200)}]`)
+          .join("\n");
+        const body = toolLines ? `${toolLines}\n${m.content}` : m.content;
+        return `[${tag}]\n${body}\n[/${tag}]`;
+      })
+      .join("\n\n");
+    const compactionPrompt = `Summarize the following conversation into a compact set of key points. Preserve all decisions, facts the user shared, conclusions reached, AND every distinct vault note already explored or modified by agent tools (so the agent doesn't re-read them later). Be brief.\n\n${text}`;
 
     const statusEl = this.appendStatusMessage("Compacting older messages…");
     try {
@@ -1004,6 +1144,23 @@ function extractAsks(text: string): string[] {
     if (q) out.push(q);
   }
   return out;
+}
+
+function formatToolInputForLog(input: Record<string, unknown>): string {
+  const keys = Object.keys(input);
+  if (keys.length === 0) return "";
+  return keys
+    .map((k) => {
+      const v = input[k];
+      const s = typeof v === "string" ? truncateForLog(v, 40) : JSON.stringify(v);
+      return `${k}=${s}`;
+    })
+    .join(", ");
+}
+
+function truncateForLog(s: string, n: number): string {
+  if (s.length <= n) return s;
+  return s.slice(0, n - 1) + "…";
 }
 
 function formatToolInput(input: Record<string, unknown>): string {

@@ -1,5 +1,6 @@
 import { App, Notice } from "obsidian";
 import { BUILTIN_SKILL_FILES } from "./builtin-skills";
+import { parseYamlFrontmatter } from "./yaml-mini";
 
 export type SkillMode = "oneshot" | "interactive";
 
@@ -14,6 +15,7 @@ export interface Skill {
   autoInsert: boolean;      // true = also auto-insert into note (old behavior)
   agent: boolean;           // true = run via tool-using agent loop (Claude API only)
   allowedTools: string[] | null;  // null/empty = all tools; otherwise allow-list
+  maxRounds: number | null; // agent tool-call ceiling; null = use loop default
 }
 
 interface ParsedFrontmatter {
@@ -26,19 +28,25 @@ interface ParsedFrontmatter {
   auto_insert?: string;
   agent?: string;
   allowed_tools?: string;
+  max_rounds?: string;
 }
 
 function parseFrontmatter(content: string): { fm: ParsedFrontmatter; body: string } | null {
   const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/);
   if (!match) return null;
 
+  const parsed = parseYamlFrontmatter(match[1]);
+  if (!parsed) return null;
+
+  // Pick only the keys our schema knows about. Unknown keys are ignored
+  // (forward-compat) rather than failing the parse.
   const fm: ParsedFrontmatter = {};
-  for (const line of match[1].split(/\r?\n/)) {
-    const colonIdx = line.indexOf(":");
-    if (colonIdx <= 0) continue;
-    const key = line.slice(0, colonIdx).trim() as keyof ParsedFrontmatter;
-    const value = line.slice(colonIdx + 1).trim();
-    fm[key] = value;
+  const known: Array<keyof ParsedFrontmatter> = [
+    "name", "description", "output", "max_depth", "max_tokens",
+    "mode", "auto_insert", "agent", "allowed_tools", "max_rounds",
+  ];
+  for (const k of known) {
+    if (k in parsed) (fm as Record<string, string>)[k] = parsed[k];
   }
 
   return { fm, body: match[2].trim() };
@@ -66,6 +74,10 @@ export function parseSKILL(content: string, sourcePath: string): Skill | null {
   const autoInsert = fm.auto_insert === "true";
   const agent = fm.agent === "true";
   const allowedTools = parseAllowedTools(fm.allowed_tools);
+  const maxRoundsRaw = fm.max_rounds ? parseInt(fm.max_rounds, 10) : NaN;
+  const maxRounds = !isNaN(maxRoundsRaw) && maxRoundsRaw > 0
+    ? Math.min(maxRoundsRaw, 40) // hard ceiling — no runaway loops via frontmatter
+    : null;
 
   return {
     name: fm.name,
@@ -78,6 +90,7 @@ export function parseSKILL(content: string, sourcePath: string): Skill | null {
     autoInsert,
     agent,
     allowedTools,
+    maxRounds,
   };
 }
 
@@ -123,9 +136,12 @@ export function createSkillLoader(
     debounceTimer = setTimeout(fn, DEBOUNCE_MS);
   }
 
-  function registerSkill(skill: Skill, isBuiltin: boolean): void {
+  function registerSkill(skill: Skill, isBuiltin: boolean, sourcePath?: string): void {
     if (!isBuiltin && builtinNames.has(skill.name)) {
-      new Notice(`gstack: custom skill "${skill.name}" conflicts with a built-in skill — rename it`);
+      const where = sourcePath ? ` (from ${sourcePath})` : "";
+      new Notice(
+        `ogstack: custom skill "${skill.name}"${where} conflicts with a built-in skill — rename it in the SKILL.md frontmatter`
+      );
       return;
     }
     const unregister = registrar(skill);
@@ -166,7 +182,7 @@ export function createSkillLoader(
       try {
         const content = await app.vault.adapter.read(filePath);
         const skill = parseSKILL(content, filePath);
-        if (skill) registerSkill(skill, false);
+        if (skill) registerSkill(skill, false, filePath);
       } catch {
         console.warn(`ogstack: could not read skill at ${filePath}`);
       }
@@ -179,7 +195,7 @@ export function createSkillLoader(
         if (!(await app.vault.adapter.exists(skillFilePath))) continue;
         const content = await app.vault.adapter.read(skillFilePath);
         const skill = parseSKILL(content, skillFilePath);
-        if (skill) registerSkill(skill, false);
+        if (skill) registerSkill(skill, false, skillFilePath);
       } catch {
         console.warn(`ogstack: could not read skill at ${skillFilePath}`);
       }

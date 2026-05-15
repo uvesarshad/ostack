@@ -14,7 +14,7 @@ ogstack is a vault-aware skill system for Obsidian that allows users to run AI-p
 - Core: TypeScript
 - Platform: Obsidian Plugin API (desktop-only — uses `child_process` for CLI providers)
 - Build: esbuild
-- Testing: Vitest (123 unit tests)
+- Testing: Vitest (161 unit tests)
 - LLM Integration: Native fetch API with Server-Sent Events (SSE) for streaming; Anthropic streaming tool-use for agent skills
 - State Management: Per-note chat sidecar files under `_agent/chats/`; settings in `.obsidian/plugins/ogstack/data.json`
 
@@ -39,6 +39,15 @@ ogstack is a vault-aware skill system for Obsidian that allows users to run AI-p
 - docs/infra/deployment.md — Describes the build process and plugin distribution format.
 - docs/infra/testing.md — Outlines the Vitest-based testing strategy and mock environment.
 
+### STATE & UI
+- docs/state/app-state.md — How runtime state is partitioned (settings, sessions, agent stickiness, streaming state).
+- docs/ui/component-library.md — Surfaces and reusable UI primitives (bar, sidebar, modals).
+- docs/ui/layout-system.md — Layout strategy across desktop sizes.
+- docs/ui/theming.md — CSS variable usage and `prefers-reduced-motion`.
+
+### SECURITY
+- docs/auth/security.md — Plugin-side security controls and references to SECURITY.md.
+
 ## Key Architectural Decisions
 
 - **Vault-Aware BFS Traversal:** The system uses Obsidian's `resolvedLinks` to find context instead of a vector database, prioritizing link depth and recency. BFS caps at 200 nodes; ceiling depth is 5.
@@ -46,7 +55,8 @@ ogstack is a vault-aware skill system for Obsidian that allows users to run AI-p
 - **Stream-to-Editor:** Output is streamed directly into the Obsidian editor via per-note mutexes to prevent concurrent write collisions.
 - **No-Dependency Streaming:** Uses native `fetch` and `TextDecoder` to handle SSE, avoiding heavy external SDKs.
 - **Markdown sidecar chat store:** Each chat session is a markdown file under `_agent/chats/<note-slug>__<id>.md` — visible in the vault, searchable, and sync-friendly (per-file diffs instead of one giant `data.json`).
-- **Agent loop on Anthropic tool-use:** `src/agent-loop.ts` runs a bounded (max 10 rounds) streaming tool-use loop. Tool calls and results are matched by `tool_use_id` (not name/order) so parallel calls compose safely.
+- **Agent loop on Anthropic tool-use:** `src/agent-loop.ts` runs a bounded streaming tool-use loop (default 10 rounds, per-skill override via `max_rounds` frontmatter, hard ceiling 40). Tool calls and results are matched by `tool_use_id` (not name/order) so parallel calls compose safely. Tool outputs are capped (`read_note` 12k chars, `search_vault` 4k chars) with a `[truncated: …]` marker.
+- **Sticky agent sessions:** Once an agent skill runs in a chat, the session records `agentSkillName` and free-text follow-ups re-enter the agent loop with the same system prompt and tool grant. The title bar tags this state. `+ New chat` clears it.
 - **CLI provider with `shell: false`:** CLI providers (Claude Code, Codex, Gemini CLI) are spawned without a shell. PATH × PATHEXT resolution is performed in-process so `.cmd`/`.bat` shims still work on Windows without exposing the args to a shell interpreter.
 
 ## Cross-Cutting Concerns
@@ -71,5 +81,20 @@ ogstack is a vault-aware skill system for Obsidian that allows users to run AI-p
 ## Related Docs
 
 - docs/how-to-update-docs.md — Rules for maintaining this documentation.
+- SECURITY.md — Threat model, controls, and vulnerability reporting.
 - temp/AUDIT_REPORT.md — Most recent full audit (2026-05-15).
 - temp/AUDIT_TASKS.md — Sprint-organized follow-up tasks from the audit.
+
+## Recent changes (Sprint 4 + 5, 2026-05-15)
+
+- Vault context framing tags are now defanged inside note content so a crafted linked note can't break out of its `<context>` block.
+- Frontmatter parser replaced with a small dedicated module (`src/yaml-mini.ts`) — handles quoted scalars, embedded colons, and rejects ambiguous duplicate keys.
+- `@`-mention suggest popup is debounced (70ms) to keep large vaults responsive.
+- Provider streams retry once on 429/503 with `Retry-After` honored (capped at 10s).
+- ARIA labels on icon buttons; suggest popups now declare `role="listbox"` and `aria-selected`; `prefers-reduced-motion` disables transitions.
+- New command **ogstack: Manage installed skills** lists `_agent/*` skills with delete + open buttons.
+- New command-line **Test connection** button in Settings sends a one-token ping through the configured provider.
+- Sidebar timestamps tick once per minute.
+- Two new built-in skills: `/summarize` (paragraph distillation) and `/plan-interactive` (clarifying-questions plan).
+- Dead `persistent-bar.ts` (288 LOC) and its 200+ lines of legacy CSS removed.
+- `manifest.json` `requestUrls` now covers Grok (`api.x.ai`) and GitHub (for skill imports).

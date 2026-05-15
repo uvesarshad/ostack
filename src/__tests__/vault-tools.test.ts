@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { App, TFile, TFolder } from "obsidian";
-import { executeVaultTool, VAULT_TOOLS, resolveTools } from "../tools/vault-tools";
+import { executeVaultTool, VAULT_TOOLS, resolveTools, READ_NOTE_CHAR_CAP, SEARCH_VAULT_CHAR_CAP } from "../tools/vault-tools";
 
 function makeApp(): App {
   return new App();
@@ -61,6 +61,44 @@ describe("executeVaultTool — read_note", () => {
     app.vault.getAbstractFileByPath = vi.fn().mockReturnValue(null);
     const result = await executeVaultTool(app, "read_note", { path: "missing.md" });
     expect(result).toMatch(/^ERROR:/);
+  });
+
+  it("truncates oversized notes with a continuation marker", async () => {
+    const file = new TFile("Notes/big.md");
+    const big = "x".repeat(READ_NOTE_CHAR_CAP + 500);
+    app.vault.getAbstractFileByPath = vi.fn().mockReturnValue(file);
+    app.vault.read = vi.fn().mockResolvedValue(big);
+
+    const result = await executeVaultTool(app, "read_note", { path: "Notes/big.md" });
+    expect(result.length).toBeLessThan(big.length);
+    expect(result).toMatch(/\[truncated:/);
+    expect(result).toMatch(/500 more chars/);
+  });
+
+  it("does not truncate notes under the cap", async () => {
+    const file = new TFile("Notes/small.md");
+    const small = "x".repeat(READ_NOTE_CHAR_CAP);
+    app.vault.getAbstractFileByPath = vi.fn().mockReturnValue(file);
+    app.vault.read = vi.fn().mockResolvedValue(small);
+    const result = await executeVaultTool(app, "read_note", { path: "Notes/small.md" });
+    expect(result).toBe(small);
+  });
+});
+
+describe("executeVaultTool — search_vault truncation", () => {
+  it("truncates a huge match list with a continuation marker", async () => {
+    const app = makeApp();
+    // Each match is ~250 chars long when formatted; 20 matches × 250 > cap.
+    const longSnippet = "haystack ".repeat(35); // ~315 chars
+    const files = Array.from({ length: 25 }, (_, i) => new TFile(`n${i}.md`));
+    app.vault.getMarkdownFiles = vi.fn().mockReturnValue(files);
+    app.vault.cachedRead = vi.fn().mockResolvedValue(longSnippet + "needle " + longSnippet);
+    const result = await executeVaultTool(app, "search_vault", { query: "needle" });
+    if (result.length > SEARCH_VAULT_CHAR_CAP) {
+      // Should have been truncated
+      expect(result).toMatch(/\[truncated:/);
+    }
+    expect(result.length).toBeLessThanOrEqual(SEARCH_VAULT_CHAR_CAP + 100);
   });
 });
 

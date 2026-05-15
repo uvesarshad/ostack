@@ -82,4 +82,34 @@ describe("parseSKILL", () => {
     expect(skill!.systemPrompt).toContain("You are an expert.");
     expect(skill!.systemPrompt).toContain("Do the thing.");
   });
+
+  it("defaults maxRounds to null (loop default applies)", () => {
+    const content = `---\nname: t\ndescription: d\n---\nBody`;
+    const skill = parseSKILL(content, "test/SKILL.md");
+    expect(skill!.maxRounds).toBeNull();
+  });
+
+  it("parses maxRounds from frontmatter", () => {
+    const content = `---\nname: t\ndescription: d\nagent: true\nmax_rounds: 20\n---\nBody`;
+    const skill = parseSKILL(content, "test/SKILL.md");
+    expect(skill!.maxRounds).toBe(20);
+  });
+
+  it("clamps maxRounds to the hard ceiling (40)", () => {
+    const content = `---\nname: t\ndescription: d\nagent: true\nmax_rounds: 999\n---\nBody`;
+    const skill = parseSKILL(content, "test/SKILL.md");
+    expect(skill!.maxRounds).toBe(40);
+  });
+
+  it("ignores invalid maxRounds values", () => {
+    const content = `---\nname: t\ndescription: d\nmax_rounds: not-a-number\n---\nBody`;
+    const skill = parseSKILL(content, "test/SKILL.md");
+    expect(skill!.maxRounds).toBeNull();
+  });
+
+  it("ignores zero or negative maxRounds", () => {
+    const content = `---\nname: t\ndescription: d\nmax_rounds: 0\n---\nBody`;
+    const skill = parseSKILL(content, "test/SKILL.md");
+    expect(skill!.maxRounds).toBeNull();
+  });
 });

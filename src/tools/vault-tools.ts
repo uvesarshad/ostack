@@ -83,6 +83,21 @@ export const VAULT_TOOLS: Record<string, ToolDefinition> = {
 
 const ALL_TOOL_NAMES = Object.keys(VAULT_TOOLS);
 
+// Hard caps on tool output sizes. The agent only gets so many tokens per round;
+// a 50KB read_note dump from one rogue link consumes a chunk of the budget.
+// Truncate with a marker so the model knows there's more if it needs to ask.
+export const READ_NOTE_CHAR_CAP = 12_000;
+export const SEARCH_VAULT_CHAR_CAP = 4_000;
+export const GET_ACTIVE_NOTE_CHAR_CAP = 12_000;
+// Guardrail on how many files search_vault scans before bailing. Keeps a
+// 10k-note vault from blocking the agent for many seconds on a single call.
+export const SEARCH_VAULT_FILE_CAP = 2_000;
+
+function truncateWithMarker(content: string, cap: number, label = "note"): string {
+  if (content.length <= cap) return content;
+  return `${content.slice(0, cap)}\n\n[truncated: ${label} continues — ${content.length - cap} more chars]`;
+}
+
 export function resolveTools(allowed: string[] | null): ToolDefinition[] {
   const names = !allowed || allowed.length === 0 ? ALL_TOOL_NAMES : allowed;
   return names.map((n) => VAULT_TOOLS[n]).filter((t): t is ToolDefinition => !!t);
@@ -129,7 +144,8 @@ export async function executeVaultTool(
 async function readNote(app: App, path: string): Promise<string> {
   const file = app.vault.getAbstractFileByPath(path);
   if (!(file instanceof TFile)) return `ERROR: note not found: ${path}`;
-  return await app.vault.read(file);
+  const content = await app.vault.read(file);
+  return truncateWithMarker(content, READ_NOTE_CHAR_CAP, path);
 }
 
 async function writeNote(app: App, path: string, content: string): Promise<string> {
@@ -175,9 +191,12 @@ async function listNotes(app: App, folder: string): Promise<string> {
 async function searchVault(app: App, query: string): Promise<string> {
   if (!query) return "ERROR: query is required";
   const needle = query.toLowerCase();
-  const files = app.vault.getMarkdownFiles();
+  const allFiles = app.vault.getMarkdownFiles();
+  const filesToScan = allFiles.slice(0, SEARCH_VAULT_FILE_CAP);
+  const fileScanTruncated = allFiles.length > SEARCH_VAULT_FILE_CAP;
+
   const matches: string[] = [];
-  for (const f of files) {
+  for (const f of filesToScan) {
     if (matches.length >= 20) break;
     let content: string;
     try {
@@ -192,15 +211,23 @@ async function searchVault(app: App, query: string): Promise<string> {
     const snippet = content.slice(start, end).replace(/\s+/g, " ").trim();
     matches.push(`${f.path}: …${snippet}…`);
   }
-  if (matches.length === 0) return `no matches for "${query}"`;
-  return matches.join("\n");
+  if (matches.length === 0) {
+    return fileScanTruncated
+      ? `no matches for "${query}" (note: only first ${SEARCH_VAULT_FILE_CAP} of ${allFiles.length} notes scanned — narrow the query or read specific paths)`
+      : `no matches for "${query}"`;
+  }
+  let result = matches.join("\n");
+  if (fileScanTruncated) {
+    result += `\n[scan truncated: only first ${SEARCH_VAULT_FILE_CAP} of ${allFiles.length} notes searched]`;
+  }
+  return truncateWithMarker(result, SEARCH_VAULT_CHAR_CAP, "results");
 }
 
 async function getActiveNote(app: App): Promise<string> {
   const file = app.workspace.getActiveFile();
   if (!file) return "no active note";
   const content = await app.vault.read(file);
-  return `path: ${file.path}\n---\n${content}`;
+  return truncateWithMarker(`path: ${file.path}\n---\n${content}`, GET_ACTIVE_NOTE_CHAR_CAP, file.path);
 }
 
 async function ensureParentFolder(app: App, path: string): Promise<void> {

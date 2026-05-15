@@ -1,5 +1,6 @@
 import { App, Plugin, PluginSettingTab, Setting } from "obsidian";
 import { isSafeCliPath, isSafeModelName } from "./providers/cli";
+import { getProvider } from "./providers/provider-interface";
 
 export type ProviderId =
   | "claude"
@@ -199,7 +200,7 @@ export class GStackSettingTab extends PluginSettingTab {
     ollamaHostSetting = new Setting(containerEl)
       .setName("Ollama host")
       .setDesc(
-        "URL of your local Ollama server. Note: Ollama responses appear after generation completes — no streaming in v1."
+        "URL of your local Ollama server. Streams tokens as the model generates."
       );
 
     ollamaHostSetting.addText((text) => {
@@ -217,11 +218,55 @@ export class GStackSettingTab extends PluginSettingTab {
           return;
         }
         ollamaHostSetting.setDesc(
-          "URL of your local Ollama server. Note: Ollama responses appear after generation completes — no streaming in v1."
+          "URL of your local Ollama server. Streams tokens as the model generates."
         );
         ollamaHostSetting.settingEl.classList.remove("mod-warning");
         this.plugin.settings.ollamaHost = val;
         await this.plugin.saveSettings();
+      });
+    });
+
+    // Test-connection button — sends a tiny ping through the configured
+    // provider and reports back. Helps users verify keys + reachability
+    // without running a real skill.
+    const testSetting = new Setting(containerEl)
+      .setName("Test connection")
+      .setDesc("Send a short ping through the configured provider to verify credentials and reachability.");
+    const testResult = containerEl.createEl("p", { cls: "gstack-test-connection-result" });
+    testSetting.addButton((btn) => {
+      btn.setButtonText("Test").onClick(async () => {
+        btn.setDisabled(true);
+        testResult.textContent = "Testing…";
+        testResult.className = "gstack-test-connection-result";
+        try {
+          const adapter = this.app.vault.adapter as { getBasePath?: () => string; basePath?: string };
+          const cwd = typeof adapter.getBasePath === "function" ? adapter.getBasePath() : adapter.basePath;
+          const provider = getProvider(this.plugin.settings, cwd);
+          const stream = provider.stream({ systemPrompt: "Reply with only the word 'pong'.", userMessage: "ping" });
+          let sawAnything = false;
+          for await (const _token of stream) {
+            sawAnything = true;
+            break; // we just need the first token
+          }
+          if (sawAnything) {
+            testResult.textContent = "✓ Connection OK — provider responded.";
+            testResult.className = "gstack-test-connection-result gstack-test-connection-ok";
+          } else {
+            testResult.textContent = "⚠ Connected but no tokens streamed back. Check the model name.";
+            testResult.className = "gstack-test-connection-result gstack-test-connection-warn";
+          }
+        } catch (err: unknown) {
+          const e = err as { status?: number; body?: string; message?: string };
+          const detail = e.status === 401
+            ? "invalid API key"
+            : e.status === 0 || !e.status
+              ? (e.body ?? e.message ?? "could not reach provider")
+              : `HTTP ${e.status} — ${e.body ?? e.message ?? ""}`;
+          testResult.textContent = `✕ ${detail}`;
+          testResult.className = "gstack-test-connection-result gstack-test-connection-err";
+        } finally {
+          btn.setDisabled(false);
+        }
       });
     });
 

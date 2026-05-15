@@ -7,6 +7,7 @@ import { createSkillLoader, Skill, SkillLoader } from "./skill-loader";
 import { runSkill } from "./skill-runner";
 import { WelcomeModal } from "./welcome-modal";
 import { ImportSkillModal } from "./import-skill-modal";
+import { ManageSkillsModal } from "./manage-skills-modal";
 
 export default class GStackPlugin extends Plugin {
   settings: GStackSettings = { ...DEFAULT_SETTINGS };
@@ -88,6 +89,16 @@ export default class GStackPlugin extends Plugin {
       name: "Import skill from GitHub",
       callback: () => {
         new ImportSkillModal(this.app, () => {
+          this.skillLoader?.loadAll();
+        }).open();
+      },
+    });
+
+    this.addCommand({
+      id: "manage-skills",
+      name: "Manage installed skills",
+      callback: () => {
+        new ManageSkillsModal(this.app, () => {
           this.skillLoader?.loadAll();
         }).open();
       },

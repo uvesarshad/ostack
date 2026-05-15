@@ -1,4 +1,5 @@
 import { App } from "obsidian";
+import { escapeForFraming } from "./context-builder";
 
 // Match [[Wiki Link]] and [[Wiki Link|alias]] in user text. The captured group
 // is the note basename (left side of `|`), trimmed by the caller.
@@ -23,7 +24,7 @@ export async function resolveMentions(text: string, app: App): Promise<string> {
     if (!file) continue;
     try {
       const content = await app.vault.cachedRead(file);
-      snippets.push(`<mentioned-note title="${file.basename}">\n${content}\n</mentioned-note>`);
+      snippets.push(`<mentioned-note title="${file.basename}">\n${escapeForFraming(content)}\n</mentioned-note>`);
     } catch {
       // silently skip unreadable files
     }

@@ -12,6 +12,9 @@ export class OgstackSidebarView extends ItemView {
   private screen: Screen = { name: "sessions" };
   private streamingContent = "";
   private storeUnsubscribe: (() => void) | null = null;
+  // Tick once per minute to refresh "5m ago"-style timestamps. Without this,
+  // a long-open sidebar shows stale relative times.
+  private relativeTimeInterval: ReturnType<typeof setInterval> | null = null;
 
   constructor(leaf: WorkspaceLeaf, private plugin: GStackPlugin) {
     super(leaf);
@@ -27,11 +30,42 @@ export class OgstackSidebarView extends ItemView {
       if (this.streamingContent) return;
       this.render();
     });
+
+    // Refresh relative timestamps once per minute (sessions screen only).
+    // We rewrite the spans in place instead of re-rendering the whole tree.
+    this.relativeTimeInterval = setInterval(() => {
+      if (this.screen.name !== "sessions") return;
+      const root = this.containerEl.children[1] as HTMLElement | undefined;
+      if (!root) return;
+      const sessions = this.plugin.chatStore.getSessions();
+      const sessionsById = new Map(sessions.map((s) => [s.id, s]));
+      root.querySelectorAll(".gstack-session-item").forEach((item) => {
+        const sessionId = item.getAttribute("data-session-id");
+        const s = sessionId ? sessionsById.get(sessionId) : null;
+        const timeEl = item.querySelector(".gstack-session-time");
+        if (s && timeEl) timeEl.textContent = relativeTime(s.updatedAt);
+      });
+    }, 60_000);
+
     await this.render();
   }
 
   async render(): Promise<void> {
     const root = this.containerEl.children[1] as HTMLElement;
+
+    // Snapshot any in-progress textarea state so a cross-surface store change
+    // (e.g. the bar wrote a message while the sidebar was open with typed-but-
+    // unsent content) doesn't blow the user's input away on the rebuild.
+    const existingTextarea = root.querySelector("textarea.gstack-chat-textarea") as HTMLTextAreaElement | null;
+    const snapshot = existingTextarea
+      ? {
+          value: existingTextarea.value,
+          selStart: existingTextarea.selectionStart ?? 0,
+          selEnd: existingTextarea.selectionEnd ?? 0,
+          focused: document.activeElement === existingTextarea,
+        }
+      : null;
+
     root.empty();
     root.className = "gstack-chat";
 
@@ -39,6 +73,19 @@ export class OgstackSidebarView extends ItemView {
       this.renderSessionsScreen(root);
     } else {
       await this.renderChatScreen(root, this.screen.sessionId);
+    }
+
+    if (snapshot) {
+      const restored = root.querySelector("textarea.gstack-chat-textarea") as HTMLTextAreaElement | null;
+      if (restored) {
+        restored.value = snapshot.value;
+        try {
+          restored.setSelectionRange(snapshot.selStart, snapshot.selEnd);
+        } catch {
+          // some browsers throw if the value changed length unexpectedly
+        }
+        if (snapshot.focused) restored.focus();
+      }
     }
   }
 
@@ -49,6 +96,7 @@ export class OgstackSidebarView extends ItemView {
     header.createEl("span", { text: "ogstack", cls: "gstack-chat-title" });
     const newBtn = header.createEl("button", { cls: "gstack-chat-icon-btn", text: "+" });
     newBtn.title = "New chat for active note";
+    newBtn.setAttribute("aria-label", "Start new chat for active note");
     newBtn.addEventListener("click", () => this.startNewChat());
 
     const sessions = this.plugin.chatStore.getSessions();
@@ -86,6 +134,10 @@ export class OgstackSidebarView extends ItemView {
 
   private renderSessionItem(container: HTMLElement, session: ChatSession): void {
     const item = container.createDiv({ cls: "gstack-session-item" });
+    item.setAttribute("data-session-id", session.id);
+    item.setAttribute("role", "button");
+    item.setAttribute("tabindex", "0");
+    item.setAttribute("aria-label", `Open chat: ${session.noteTitle || "Untitled"}`);
     const info = item.createDiv({ cls: "gstack-session-info" });
     info.createEl("div", { text: session.noteTitle || "Untitled", cls: "gstack-session-title" });
 
@@ -99,15 +151,23 @@ export class OgstackSidebarView extends ItemView {
     meta.createEl("span", { text: relativeTime(session.updatedAt), cls: "gstack-session-time" });
     const del = meta.createEl("button", { cls: "gstack-session-del", text: "×" });
     del.title = "Delete";
+    del.setAttribute("aria-label", `Delete chat: ${session.noteTitle || "Untitled"}`);
     del.addEventListener("click", async (e) => {
       e.stopPropagation();
       await this.plugin.chatStore.deleteSession(session.id);
       this.render();
     });
 
-    item.addEventListener("click", () => {
+    const open = () => {
       this.screen = { name: "chat", sessionId: session.id };
       this.render();
+    };
+    item.addEventListener("click", open);
+    item.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        open();
+      }
     });
   }
 
@@ -119,6 +179,7 @@ export class OgstackSidebarView extends ItemView {
 
     const header = root.createDiv({ cls: "gstack-chat-header" });
     const back = header.createEl("button", { cls: "gstack-chat-icon-btn", text: "←" });
+    back.setAttribute("aria-label", "Back to sessions list");
     back.addEventListener("click", () => { this.screen = { name: "sessions" }; this.render(); });
     header.createEl("span", { text: session.noteTitle || "Chat", cls: "gstack-chat-title" });
 
@@ -191,6 +252,8 @@ export class OgstackSidebarView extends ItemView {
   private buildInputArea(container: HTMLElement, session: ChatSession, msgs: HTMLElement): void {
     const skills = this.plugin.getSkills();
     const suggestEl = container.createDiv({ cls: "gstack-chat-suggest" });
+    suggestEl.setAttribute("role", "listbox");
+    suggestEl.setAttribute("aria-label", "Skill and note suggestions");
 
     type SuggestEntry = { type: "skill"; skill: { name: string; description: string } } | { type: "note"; file: TFile };
     let filteredEntries: SuggestEntry[] = [];
@@ -227,7 +290,9 @@ export class OgstackSidebarView extends ItemView {
 
     const updateSelection = () => {
       suggestEl.querySelectorAll(".gstack-chat-suggest-item").forEach((el, i) => {
-        el.classList.toggle("selected", i === selectedIdx);
+        const isSel = i === selectedIdx;
+        el.classList.toggle("selected", isSel);
+        el.setAttribute("aria-selected", String(isSel));
       });
     };
 
@@ -253,6 +318,8 @@ export class OgstackSidebarView extends ItemView {
       suggestEl.classList.add("visible");
       entries.forEach((entry, i) => {
         const item = suggestEl.createDiv({ cls: "gstack-chat-suggest-item" + (i === selectedIdx ? " selected" : "") });
+        item.setAttribute("role", "option");
+        item.setAttribute("aria-selected", String(i === selectedIdx));
         if (entry.type === "skill") {
           item.createEl("span", { text: `/${entry.skill.name}`, cls: "gstack-chat-suggest-name" });
           item.createEl("span", { text: entry.skill.description, cls: "gstack-chat-suggest-desc" });
@@ -264,7 +331,8 @@ export class OgstackSidebarView extends ItemView {
       });
     };
 
-    textarea.addEventListener("input", () => {
+    let suggestDebounce: ReturnType<typeof setTimeout> | null = null;
+    const onTextareaInput = () => {
       const tv = textarea as HTMLTextAreaElement;
       const cursor = tv.selectionStart ?? 0;
       const text = tv.value.slice(0, cursor);
@@ -298,6 +366,13 @@ export class OgstackSidebarView extends ItemView {
       }
 
       clearSuggest();
+    };
+
+    textarea.addEventListener("input", () => {
+      // Debounce — for vaults with thousands of notes, the @ filter rebuilds
+      // a 5k-element list on every keystroke without this.
+      if (suggestDebounce) clearTimeout(suggestDebounce);
+      suggestDebounce = setTimeout(onTextareaInput, 70);
     });
 
     const send = async () => {
@@ -429,6 +504,10 @@ export class OgstackSidebarView extends ItemView {
   async onClose(): Promise<void> {
     this.storeUnsubscribe?.();
     this.storeUnsubscribe = null;
+    if (this.relativeTimeInterval) {
+      clearInterval(this.relativeTimeInterval);
+      this.relativeTimeInterval = null;
+    }
   }
 }
 

@@ -153,7 +153,7 @@ export async function buildVaultContext(
 export function formatVaultContext(ctx: VaultContext): string {
   const activeTitle = ctx.activeNote.path.split("/").pop()?.replace(/\.md$/, "") ?? ctx.activeNote.path;
   const parts: string[] = [
-    `<active-note title="${escapeAttr(activeTitle)}">\n${ctx.activeNote.content}\n</active-note>`,
+    `<active-note title="${escapeAttr(activeTitle)}">\n${escapeForFraming(ctx.activeNote.content)}\n</active-note>`,
   ];
 
   for (const note of ctx.linkedNotes) {
@@ -163,12 +163,12 @@ export function formatVaultContext(ctx: VaultContext): string {
 
     if (note.summaryOnly && annotation) {
       parts.push(
-        `<context title="${escapeAttr(title)}" score="${score}" depth="${note.depth}" annotation="${escapeAttr(annotation)}" summary-only="true">${annotation}</context>`
+        `<context title="${escapeAttr(title)}" score="${score}" depth="${note.depth}" annotation="${escapeAttr(annotation)}" summary-only="true">${escapeForFraming(annotation)}</context>`
       );
     } else {
       const annotationAttr = annotation ? ` annotation="${escapeAttr(annotation)}"` : "";
       parts.push(
-        `<context title="${escapeAttr(title)}" score="${score}" depth="${note.depth}"${annotationAttr}>\n${note.content}\n</context>`
+        `<context title="${escapeAttr(title)}" score="${score}" depth="${note.depth}"${annotationAttr}>\n${escapeForFraming(note.content)}\n</context>`
       );
     }
   }
@@ -178,4 +178,13 @@ export function formatVaultContext(ctx: VaultContext): string {
 
 function escapeAttr(s: string): string {
   return s.replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+// Defang only the framing tags so a malicious note can't break out of its
+// <context>/<active-note> block. We deliberately don't escape all `<`/`>`
+// (that would mangle legitimate markdown with HTML embeds like <details> or
+// <br>). The model still sees the original characters in everything else.
+const FRAMING_RX = /<\/?(?:context|active-note|mentioned-note)\b/gi;
+export function escapeForFraming(content: string): string {
+  return content.replace(FRAMING_RX, (m) => m.replace("<", "&lt;"));
 }

@@ -92,6 +92,29 @@ describe("ChatStore — round-trip persistence", () => {
     expect(assistant.toolCalls![1].isError).toBe(false);
   });
 
+  it("persists agentSkillName stickiness across reloads", async () => {
+    const adapter = new InMemoryAdapter();
+    const plugin = makePlugin(adapter);
+    const store = new ChatStore(plugin as unknown as Parameters<typeof ChatStore["prototype"]["constructor"]>[0]);
+
+    await store.load();
+    const session = await store.createSession("note.md", "note");
+    expect(session.agentSkillName).toBeUndefined();
+
+    await store.setAgentSkill(session.id, "vault-agent");
+    expect(store.getSession(session.id)!.agentSkillName).toBe("vault-agent");
+
+    const store2 = new ChatStore(plugin as unknown as Parameters<typeof ChatStore["prototype"]["constructor"]>[0]);
+    await store2.load();
+    expect(store2.getSession(session.id)!.agentSkillName).toBe("vault-agent");
+
+    // Clearing it removes the field from disk
+    await store2.setAgentSkill(session.id, undefined);
+    const store3 = new ChatStore(plugin as unknown as Parameters<typeof ChatStore["prototype"]["constructor"]>[0]);
+    await store3.load();
+    expect(store3.getSession(session.id)!.agentSkillName).toBeUndefined();
+  });
+
   it("messages without tool calls don't get a toolCalls field on reload", async () => {
     const adapter = new InMemoryAdapter();
     const plugin = makePlugin(adapter);

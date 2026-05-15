@@ -140,7 +140,58 @@ describe("runClaudeAgent — basic flow", () => {
 
     const lastEvt = events[events.length - 1];
     expect(lastEvt.type).toBe("error");
-    expect((lastEvt as { message: string }).message).toMatch(/loop guard/);
+    expect((lastEvt as { message: string }).message).toMatch(/gave up after \d+ tool rounds/);
+  });
+
+  it("respects per-skill maxRounds override", async () => {
+    vi.spyOn(ClaudeProvider.prototype, "streamWithTools").mockImplementation(() =>
+      scripted([
+        { type: "tool_use", id: "tu_x", name: "get_active_note", input: {} },
+        { type: "stop", stopReason: "tool_use" },
+      ])
+    );
+    app.workspace.getActiveFile = vi.fn().mockReturnValue(null);
+
+    const events = await drain(runClaudeAgent({
+      app,
+      apiKey: "sk",
+      model: "m",
+      systemPrompt: "sys",
+      userMessage: "go",
+      allowedTools: null,
+      maxRounds: 3,
+    }));
+
+    const toolCalls = events.filter((e) => e.type === "tool_call");
+    expect(toolCalls.length).toBe(3);
+    const last = events[events.length - 1];
+    expect(last.type).toBe("error");
+    expect((last as { message: string }).message).toMatch(/after 3 tool rounds/);
+  });
+
+  it("caps maxRounds to the hard ceiling even if frontmatter requests more", async () => {
+    let callCount = 0;
+    vi.spyOn(ClaudeProvider.prototype, "streamWithTools").mockImplementation(() => {
+      callCount++;
+      return scripted([
+        { type: "tool_use", id: `tu_${callCount}`, name: "get_active_note", input: {} },
+        { type: "stop", stopReason: "tool_use" },
+      ]);
+    });
+    app.workspace.getActiveFile = vi.fn().mockReturnValue(null);
+
+    await drain(runClaudeAgent({
+      app,
+      apiKey: "sk",
+      model: "m",
+      systemPrompt: "sys",
+      userMessage: "go",
+      allowedTools: null,
+      maxRounds: 9999,
+    }));
+
+    // HARD_MAX_TOOL_ROUNDS is 40
+    expect(callCount).toBe(40);
   });
 
   it("emits an error event when the provider throws", async () => {

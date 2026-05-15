@@ -1,4 +1,5 @@
 import type GStackPlugin from "./main";
+import { parseYamlFrontmatter } from "./yaml-mini";
 
 export interface ToolCall {
   // Anthropic tool_use_id (e.g. "toolu_01ABC…"). Optional for back-compat with
@@ -24,6 +25,10 @@ export interface ChatSession {
   createdAt: number;
   updatedAt: number;
   messages: ChatMessage[];
+  // When set, free-text follow-ups in this session re-enter the agent loop
+  // using this skill (sticky until a new skill is run or the chat is reset).
+  // Stored as a name so a later code refactor of skill IDs doesn't strand it.
+  agentSkillName?: string;
 }
 
 const CHATS_FOLDER = "_agent/chats";
@@ -127,6 +132,20 @@ export class ChatStore {
     }
   }
 
+  // Stick (or unstick) an agent skill on a session. Once stuck, free-text
+  // follow-ups continue the agent loop with this skill until cleared or a new
+  // skill is run.
+  async setAgentSkill(sessionId: string, skillName: string | undefined): Promise<void> {
+    const session = this.sessions.find((s) => s.id === sessionId);
+    if (!session) return;
+    if (session.agentSkillName === skillName) return;
+    if (skillName) session.agentSkillName = skillName;
+    else delete session.agentSkillName;
+    session.updatedAt = Date.now();
+    await this.writeSessionFile(session);
+    this.notify();
+  }
+
   async replaceSessionMessages(sessionId: string, messages: ChatMessage[]): Promise<void> {
     const session = this.sessions.find((s) => s.id === sessionId);
     if (!session) return;
@@ -167,11 +186,22 @@ export class ChatStore {
     const adapter = this.plugin.app.vault.adapter;
     if (!(await adapter.exists(CHATS_FOLDER))) return;
     const listing = await adapter.list(CHATS_FOLDER);
+    const mdFiles = listing.files.filter((f) => f.endsWith(".md"));
+
+    // Read all session files in parallel — sequential reads add up fast for
+    // power users with hundreds of saved chats.
+    const results = await Promise.allSettled(
+      mdFiles.map(async (filePath) => ({ filePath, content: await adapter.read(filePath) }))
+    );
+
     const loaded: ChatSession[] = [];
-    for (const filePath of listing.files) {
-      if (!filePath.endsWith(".md")) continue;
+    for (const r of results) {
+      if (r.status === "rejected") {
+        console.warn("ogstack: could not read a chat file during scan", r.reason);
+        continue;
+      }
+      const { filePath, content } = r.value;
       try {
-        const content = await adapter.read(filePath);
         const session = parseChatFile(content);
         if (!session) continue;
         loaded.push(session);
@@ -246,6 +276,7 @@ function serializeChat(session: ChatSession): string {
     `noteTitle: ${yamlScalar(session.noteTitle)}`,
     `createdAt: ${session.createdAt}`,
     `updatedAt: ${session.updatedAt}`,
+    ...(session.agentSkillName ? [`agentSkillName: ${yamlScalar(session.agentSkillName)}`] : []),
     "---",
     "",
   ];
@@ -270,19 +301,8 @@ function parseChatFile(content: string): ChatSession | null {
   // Quick reject if not our format
   if (!/^\s*ogstack:\s*chat\s*$/m.test(fmText)) return null;
 
-  const fm: Record<string, string> = {};
-  for (const line of fmText.split(/\r?\n/)) {
-    const colonIdx = line.indexOf(":");
-    if (colonIdx <= 0) continue;
-    const key = line.slice(0, colonIdx).trim();
-    let value = line.slice(colonIdx + 1).trim();
-    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
-      value = value.slice(1, -1).replace(/\\"/g, '"');
-    }
-    fm[key] = value;
-  }
-
-  if (!fm.id) return null;
+  const fm = parseYamlFrontmatter(fmText);
+  if (!fm || !fm.id) return null;
 
   // Split body into messages by delimiter. The regex has 2 capture groups so
   // String.split returns: [pre, role, time, msgBody, role, time, msgBody, ...]
@@ -325,6 +345,7 @@ function parseChatFile(content: string): ChatSession | null {
     createdAt: parseInt(fm.createdAt, 10) || Date.now(),
     updatedAt: parseInt(fm.updatedAt, 10) || Date.now(),
     messages,
+    ...(fm.agentSkillName ? { agentSkillName: fm.agentSkillName } : {}),
   };
 }
 

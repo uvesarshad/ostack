@@ -1,3 +1,21 @@
+/*
+ * ogstack — styles.css
+ *
+ * Section index (search the header text to jump):
+ *   - Shared animations           — spin / pulse keyframes used by spinners
+ *   - Floating input overlay      — Cmd+K-style centered input (.gstack-fi-*)
+ *   - Status bar streaming        — Obsidian status-bar indicator (.gstack-statusbar-*)
+ *   - New conversation bar        — floating chat surface (.gstack-bar2-*)
+ *   - Chat sidebar                — right-side panel (.gstack-chat-*)
+ *   - Welcome modal               — first-run modal (.gstack-welcome-*)
+ *   - Import skills modal         — GitHub import (.gstack-import-*)
+ *   - Manage installed skills     — list/delete modal (.gstack-manage-skills-*)
+ *   - Settings                    — settings tab (.gstack-api-disclaimer, .gstack-test-connection-*)
+ *   - prefers-reduced-motion      — disables transitions for accessibility
+ *
+ * Each section header is wrapped in `── header ──` for easy grep.
+ */
+
 /* ── Shared animations ────────────────────────────────────────── */
 
 @keyframes gstack-spin {
@@ -7,241 +25,6 @@
 @keyframes gstack-pulse {
   0%, 80%, 100% { opacity: 0.3; }
   40% { opacity: 1; }
-}
-
-@keyframes gstack-bar-shimmer {
-  from { left: -80%; }
-  to   { left: 150%; }
-}
-
-@keyframes gstack-bar-border-pulse {
-  0%, 100% {
-    box-shadow: 0 6px 28px rgba(0, 0, 0, 0.2),
-                0 0 0 0 color-mix(in srgb, var(--interactive-accent) 30%, transparent);
-  }
-  50% {
-    box-shadow: 0 6px 36px rgba(0, 0, 0, 0.25),
-                0 0 14px 4px color-mix(in srgb, var(--interactive-accent) 22%, transparent);
-  }
-}
-
-@keyframes gstack-done-flash {
-  0%   { box-shadow: 0 6px 28px rgba(0,0,0,0.2), 0 0 0 0 color-mix(in srgb, var(--color-green) 50%, transparent); }
-  40%  { box-shadow: 0 6px 36px rgba(0,0,0,0.22), 0 0 20px 8px color-mix(in srgb, var(--color-green) 30%, transparent); }
-  100% { box-shadow: 0 6px 28px rgba(0,0,0,0.2), 0 0 0 0 transparent; }
-}
-
-@keyframes gstack-error-flash {
-  0%   { box-shadow: 0 6px 28px rgba(0,0,0,0.2), 0 0 0 0 color-mix(in srgb, var(--color-red) 50%, transparent); }
-  40%  { box-shadow: 0 6px 36px rgba(0,0,0,0.22), 0 0 20px 8px color-mix(in srgb, var(--color-red) 30%, transparent); }
-  100% { box-shadow: 0 6px 28px rgba(0,0,0,0.2), 0 0 0 0 transparent; }
-}
-
-/* ── Persistent floating AI bar ───────────────────────────────── */
-
-.gstack-bar-container {
-  position: fixed;
-  bottom: 52px; /* above Obsidian status bar */
-  left: 50%;
-  transform: translateX(-50%) translateY(12px);
-  width: min(620px, 84vw);
-  z-index: 200;
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 0.2s ease, transform 0.2s ease;
-}
-
-.gstack-bar-container.visible {
-  opacity: 1;
-  transform: translateX(-50%) translateY(0);
-  pointer-events: auto;
-}
-
-/* Suggestion popup (floats above the pill) */
-.gstack-bar-popup {
-  position: absolute;
-  bottom: calc(100% + 10px);
-  left: 0;
-  right: 0;
-  background: var(--background-primary);
-  border: 1px solid var(--background-modifier-border);
-  border-radius: 12px;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.22);
-  overflow: hidden;
-  max-height: 260px;
-  overflow-y: auto;
-}
-
-.gstack-bar-popup-item {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 9px 16px;
-  cursor: pointer;
-  transition: background 0.1s;
-}
-
-.gstack-bar-popup-item:hover,
-.gstack-bar-popup-item.selected {
-  background: var(--background-modifier-hover);
-}
-
-.gstack-bar-popup-name {
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--color-accent);
-  min-width: 110px;
-  flex-shrink: 0;
-}
-
-.gstack-bar-popup-desc {
-  font-size: 12px;
-  color: var(--text-muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-/* The pill itself */
-.gstack-bar-pill {
-  position: relative;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 11px 18px;
-  background: var(--background-primary);
-  border: 1.5px solid var(--background-modifier-border);
-  border-radius: 32px;
-  box-shadow: 0 6px 28px rgba(0, 0, 0, 0.18), 0 1px 4px rgba(0, 0, 0, 0.08);
-  overflow: hidden;
-  transition: border-color 0.25s, box-shadow 0.25s;
-  cursor: text;
-}
-
-/* Shimmer overlay — slides across during running state */
-.gstack-bar-shimmer {
-  position: absolute;
-  top: 0;
-  left: -80%;
-  width: 60%;
-  height: 100%;
-  background: linear-gradient(
-    90deg,
-    transparent,
-    color-mix(in srgb, var(--interactive-accent) 18%, transparent),
-    transparent
-  );
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 0.3s;
-}
-
-.gstack-bar-pill.running .gstack-bar-shimmer {
-  opacity: 1;
-  animation: gstack-bar-shimmer 1.7s ease-in-out infinite;
-}
-
-.gstack-bar-pill.focused {
-  border-color: color-mix(in srgb, var(--interactive-accent) 60%, var(--background-modifier-border));
-  box-shadow: 0 6px 32px rgba(0, 0, 0, 0.2),
-              0 0 0 3px color-mix(in srgb, var(--interactive-accent) 12%, transparent);
-}
-
-.gstack-bar-pill.running {
-  border-color: var(--interactive-accent);
-  animation: gstack-bar-border-pulse 2s ease-in-out infinite;
-  cursor: default;
-}
-
-.gstack-bar-pill.done {
-  border-color: var(--color-green);
-  animation: gstack-done-flash 0.7s ease-out forwards;
-}
-
-.gstack-bar-pill.error {
-  border-color: var(--color-red);
-  animation: gstack-error-flash 0.7s ease-out forwards;
-}
-
-.gstack-bar-icon {
-  color: var(--color-accent);
-  font-size: 18px;
-  line-height: 1;
-  flex-shrink: 0;
-  transition: transform 0.3s;
-}
-
-.gstack-bar-pill.running .gstack-bar-icon {
-  animation: gstack-spin 2s linear infinite;
-}
-
-.gstack-bar-input-wrap {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  transition: opacity 0.2s;
-}
-
-.gstack-bar-pill.running .gstack-bar-input-wrap {
-  opacity: 0;
-  pointer-events: none;
-}
-
-.gstack-bar-input {
-  flex: 1;
-  background: transparent;
-  border: none;
-  outline: none;
-  font-size: 14px;
-  color: var(--text-normal);
-  caret-color: var(--color-accent);
-  font-family: inherit;
-}
-
-.gstack-bar-hint {
-  font-size: 11px;
-  color: var(--text-faint);
-  background: var(--background-modifier-border);
-  border-radius: 4px;
-  padding: 2px 7px;
-  flex-shrink: 0;
-  transition: opacity 0.2s;
-}
-
-/* Status wrap: overlaid over the input-wrap area when running */
-.gstack-bar-status-wrap {
-  position: absolute;
-  left: 52px; /* after icon + padding */
-  right: 18px;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 0.2s;
-  font-size: 13px;
-}
-
-.gstack-bar-pill.running .gstack-bar-status-wrap { opacity: 1; pointer-events: auto; }
-.gstack-bar-pill.done    .gstack-bar-status-wrap { opacity: 1; pointer-events: auto; color: var(--color-green); }
-.gstack-bar-pill.error   .gstack-bar-status-wrap { opacity: 1; pointer-events: auto; color: var(--text-error); }
-.gstack-bar-pill.idle    .gstack-bar-status-wrap { opacity: 0; }
-
-.gstack-bar-spinner {
-  width: 14px;
-  height: 14px;
-  border: 2px solid currentColor;
-  border-top-color: transparent;
-  border-radius: 50%;
-  animation: gstack-spin 0.7s linear infinite;
-  flex-shrink: 0;
-}
-
-.gstack-bar-status-text {
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 /* ── Floating input overlay (Cmd+K style) ─────────────────────── */
@@ -779,10 +562,34 @@
   font-weight: 600;
   color: var(--text-muted);
   margin-right: 6px;
-  max-width: 200px;
+  max-width: 320px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.gstack-bar2-toolbar-agent-tag {
+  font-weight: 500;
+  color: var(--color-accent);
+  margin-left: 4px;
+}
+
+.gstack-bar2-agent-limit {
+  display: block;
+  padding: 6px 8px;
+  border-left: 2px solid var(--color-orange, var(--color-yellow));
+  margin-top: 6px;
+  background: var(--background-modifier-error-hover);
+  border-radius: 4px;
+}
+.gstack-bar2-agent-limit-title {
+  font-weight: 600;
+  font-size: 12px;
+  margin-bottom: 2px;
+}
+.gstack-bar2-agent-limit-detail {
+  font-size: 12px;
+  color: var(--text-muted);
 }
 
 .gstack-bar2-toolbar-btn {
@@ -1187,7 +994,59 @@
   margin-top: 12px;
 }
 
+/* ── Manage installed skills modal ────────────────────────────── */
+
+.gstack-manage-skills-modal h2 { margin: 0 0 6px; font-size: 18px; }
+.gstack-manage-skills-desc { color: var(--text-muted); font-size: 12px; margin-bottom: 12px; }
+.gstack-manage-skills-status { color: var(--text-muted); font-size: 13px; }
+.gstack-manage-skills-list { display: flex; flex-direction: column; gap: 6px; }
+.gstack-manage-skills-item {
+  display: flex;
+  gap: 12px;
+  padding: 8px 10px;
+  background: var(--background-secondary);
+  border-radius: 6px;
+  align-items: center;
+}
+.gstack-manage-skills-info { flex: 1; min-width: 0; }
+.gstack-manage-skills-name { font-weight: 600; font-size: 13px; }
+.gstack-manage-skills-tag {
+  margin-left: 6px;
+  padding: 1px 6px;
+  font-size: 10px;
+  font-weight: 500;
+  background: var(--background-modifier-active-hover);
+  color: var(--color-accent);
+  border-radius: 4px;
+  text-transform: uppercase;
+}
+.gstack-manage-skills-desc-line { color: var(--text-normal); font-size: 12px; }
+.gstack-manage-skills-path { color: var(--text-faint); font-size: 11px; font-family: var(--font-monospace); }
+.gstack-manage-skills-actions { display: flex; gap: 6px; }
+.gstack-manage-skills-btn {
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 4px;
+  border: 1px solid var(--background-modifier-border);
+  background: var(--background-primary);
+  cursor: pointer;
+}
+.gstack-manage-skills-btn:hover { background: var(--background-modifier-hover); }
+.gstack-manage-skills-btn.mod-warning { color: var(--text-error); }
+.gstack-manage-skills-btn:disabled { opacity: 0.4; cursor: default; }
+
 /* ── Settings ─────────────────────────────────────────────────── */
+
+.gstack-test-connection-result {
+  font-size: 12px;
+  padding: 4px 0;
+  margin: -8px 0 12px;
+  color: var(--text-muted);
+  min-height: 18px;
+}
+.gstack-test-connection-result.gstack-test-connection-ok { color: var(--color-green); }
+.gstack-test-connection-result.gstack-test-connection-warn { color: var(--color-yellow); }
+.gstack-test-connection-result.gstack-test-connection-err { color: var(--text-error); }
 
 .gstack-api-disclaimer {
   background-color: var(--background-modifier-error);
@@ -1201,3 +1060,18 @@
 }
 
 .gstack-hidden { display: none; }
+
+/* ── prefers-reduced-motion: disable animations and transitions ── */
+
+@media (prefers-reduced-motion: reduce) {
+  .gstack-bar2-container,
+  .gstack-bar2-msg-streaming,
+  .gstack-statusbar-streaming .dot,
+  .gstack-fi-spinner,
+  .gstack-chat-suggest,
+  .gstack-bar2-popup,
+  .gstack-bar2-popup-item {
+    animation: none !important;
+    transition: none !important;
+  }
+}

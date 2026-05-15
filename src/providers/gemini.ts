@@ -1,4 +1,5 @@
 import { LLMProvider, LLMRequest } from "./provider-interface";
+import { fetchWithRetry } from "./retry";
 
 export class GeminiProvider implements LLMProvider {
   constructor(private apiKey: string, private model: string) {}
@@ -11,7 +12,7 @@ export class GeminiProvider implements LLMProvider {
 
     let response: Response;
     try {
-      response = await fetch(url, {
+      response = await fetchWithRetry(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -26,7 +27,7 @@ export class GeminiProvider implements LLMProvider {
             : [{ role: "user", parts: [{ text: request.userMessage ?? "" }] }],
         }),
         signal: controller.signal,
-      });
+      }, { signal: controller.signal });
     } catch (err: unknown) {
       clearTimeout(timeout);
       if ((err as { name?: string }).name === "AbortError") {
