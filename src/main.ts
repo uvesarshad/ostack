@@ -70,6 +70,19 @@ export default class GStackPlugin extends Plugin {
       callback: () => this.bar?.focusInput(),
     });
 
+    // Fallback window-level listener. Obsidian's command hotkey for Ctrl+Shift+Space
+    // is often eaten by Windows IME (or other plugins) before the keymap sees it,
+    // so we also bind at the DOM level. Auto-unbound on plugin unload.
+    this.registerDomEvent(window, "keydown", (evt: KeyboardEvent) => {
+      const isMod = evt.ctrlKey || evt.metaKey;
+      const keyIsSpace = evt.code === "Space" || evt.key === " " || evt.key === "Spacebar";
+      if (isMod && evt.shiftKey && !evt.altKey && keyIsSpace) {
+        evt.preventDefault();
+        evt.stopPropagation();
+        this.bar?.focusInput();
+      }
+    });
+
     this.addCommand({
       id: "import-skill",
       name: "Import skill from GitHub",

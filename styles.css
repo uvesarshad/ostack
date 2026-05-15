@@ -853,6 +853,17 @@
 .gstack-bar2-msg-assistant {
   align-self: flex-start;
   max-width: 100%;
+  white-space: pre-wrap;
+}
+
+/* Streaming cursor: appended via CSS so it always sits at the actual end of the
+   rendered text — no separate DOM node to get out of sync with reflow. */
+.gstack-bar2-msg-streaming::after {
+  content: "▌";
+  display: inline;
+  color: var(--color-accent);
+  margin-left: 1px;
+  animation: gstack-blink 0.9s steps(1) infinite;
 }
 
 .gstack-bar2-msg-content {

@@ -51,8 +51,19 @@ function buildArgs(kind: CliKind, model: string): string[] {
       // Claude Code headless mode reads prompt from stdin when -p is empty
       return ["-p", ...(model ? ["--model", model] : []), "--output-format", "text"];
     case "codex-cli":
-      // Codex CLI: -e for exec mode, reads from stdin if prompt arg empty
-      return ["exec", ...(model ? ["--model", model] : [])];
+      // Codex CLI exec mode. We need:
+      //  - --skip-git-repo-check: Obsidian vaults usually aren't git repos
+      //  - --json: parse structured JSONL events so we can extract assistant text
+      //            (default output mixes session info, reasoning, tool calls, etc.)
+      //  - --sandbox read-only: we only want a chat reply, not file ops
+      //  - prompt is read from stdin (no positional arg)
+      return [
+        "exec",
+        "--skip-git-repo-check",
+        "--json",
+        "--sandbox", "read-only",
+        ...(model ? ["--model", model] : []),
+      ];
     case "gemini-cli":
       // Gemini CLI: -p reads from stdin if no prompt arg
       return ["-p", ...(model ? ["--model", model] : [])];
@@ -101,18 +112,78 @@ export class CliProvider implements LLMProvider {
 
     const wake = (): void => { resolver?.(); resolver = null; };
 
+    // Codex emits JSONL events; we need to buffer partial lines and extract just
+    // the assistant text. Other CLIs emit plain text so we forward as-is.
+    const useJsonl = this.kind === "codex-cli";
+    let jsonlBuffer = "";
+    let emittedFromDeltas = false;
+    let lastFullAgentMessage = "";
+
+    const handleJsonlLine = (line: string): void => {
+      const trimmed = line.trim();
+      if (!trimmed || !trimmed.startsWith("{")) return; // skip "Reading prompt from stdin..." etc.
+      let evt: {
+        type?: string;
+        item?: { type?: string; text?: string; delta?: string };
+        msg?: { type?: string; message?: string };
+      };
+      try {
+        evt = JSON.parse(trimmed);
+      } catch {
+        return; // skip malformed lines
+      }
+      // Codex 0.130+ schema: item.completed / item.delta with item.type === "agent_message"
+      if (evt.type === "item.delta" && evt.item?.type === "agent_message" && typeof evt.item.delta === "string") {
+        emittedFromDeltas = true;
+        queue.push(evt.item.delta);
+        wake();
+      } else if (evt.type === "item.completed" && evt.item?.type === "agent_message" && typeof evt.item.text === "string") {
+        lastFullAgentMessage = evt.item.text;
+      } else if (evt.type === "error" && evt.msg?.message) {
+        errorMsg += evt.msg.message + "\n";
+      }
+    };
+
     proc.stdout.on("data", (chunk: Buffer) => {
-      queue.push(chunk.toString("utf8"));
-      wake();
+      const text = chunk.toString("utf8");
+      if (!useJsonl) {
+        queue.push(text);
+        wake();
+        return;
+      }
+      jsonlBuffer += text;
+      let nl: number;
+      while ((nl = jsonlBuffer.indexOf("\n")) !== -1) {
+        const line = jsonlBuffer.slice(0, nl);
+        jsonlBuffer = jsonlBuffer.slice(nl + 1);
+        handleJsonlLine(line);
+      }
     });
 
     proc.stdout.on("end", () => {
+      if (useJsonl) {
+        // Flush trailing JSONL line if any
+        if (jsonlBuffer.trim().length > 0) {
+          handleJsonlLine(jsonlBuffer);
+          jsonlBuffer = "";
+        }
+        // If no deltas streamed but we captured a full agent_message, emit it now
+        if (!emittedFromDeltas && lastFullAgentMessage) {
+          queue.push(lastFullAgentMessage);
+        }
+      }
       finished = true;
       wake();
     });
 
     proc.stderr.on("data", (chunk: Buffer) => {
-      errorMsg += chunk.toString("utf8");
+      const text = chunk.toString("utf8");
+      // Codex prints "Reading prompt from stdin..." as informational stderr — not an error.
+      const cleaned = text
+        .split("\n")
+        .filter((l) => !l.includes("Reading prompt from stdin"))
+        .join("\n");
+      errorMsg += cleaned;
     });
 
     proc.on("exit", (code: unknown) => {

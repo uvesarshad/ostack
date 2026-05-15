@@ -386,10 +386,9 @@ export class BarChat extends Component implements ProgressReporter {
   }
 
   private renderStreamingText(el: HTMLElement, content: string): void {
-    const visible = stripAsks(content);
-    el.empty();
-    el.createSpan({ text: visible });
-    el.createSpan({ cls: "gstack-bar2-cursor", text: "▌" });
+    // Cursor is injected by CSS (.gstack-bar2-msg-streaming::after) so it always
+    // sits at the actual end of the wrapped text. We just keep textContent in sync.
+    el.textContent = stripAsks(content);
   }
 
   private renderActionButtons(parent: HTMLElement, content: string): void {

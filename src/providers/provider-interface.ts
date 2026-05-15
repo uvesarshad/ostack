@@ -44,21 +44,29 @@ export function getProvider(settings: GStackSettings): LLMProvider {
 
 export function getScoutProvider(settings: GStackSettings): LLMProvider {
   const scoutModel = settings.scoutModel || "gemini-2.0-flash-lite";
-  switch (settings.provider) {
+
+  // Resolve which provider + credentials the scout should use. "inherit" means
+  // reuse the main provider config (just with the scout model).
+  const useInherit = settings.scoutProvider === "inherit" || !settings.scoutProvider;
+  const scoutProviderId = (useInherit ? settings.provider : settings.scoutProvider) as GStackSettings["provider"];
+  const scoutApiKey = useInherit ? settings.apiKey : settings.scoutApiKey;
+  const scoutCliPath = useInherit ? settings.cliPath : settings.scoutCliPath;
+  const scoutOllamaHost = useInherit ? settings.ollamaHost : (settings.scoutOllamaHost || settings.ollamaHost);
+
+  switch (scoutProviderId) {
     case "claude":
-      return new ClaudeProvider(settings.apiKey, scoutModel);
+      return new ClaudeProvider(scoutApiKey, scoutModel);
     case "openai":
-      return new OpenAIProvider(settings.apiKey, scoutModel);
+      return new OpenAIProvider(scoutApiKey, scoutModel);
     case "gemini":
-      return new GeminiProvider(settings.apiKey, scoutModel);
+      return new GeminiProvider(scoutApiKey, scoutModel);
     case "grok":
-      return new GrokProvider(settings.apiKey, scoutModel);
+      return new GrokProvider(scoutApiKey, scoutModel);
     case "ollama":
-      return new OllamaProvider(settings.ollamaHost, scoutModel);
+      return new OllamaProvider(scoutOllamaHost, scoutModel);
     case "claude-cli":
     case "codex-cli":
     case "gemini-cli":
-      // CLI providers don't have a separate "scout" mode — fall back to main model
-      return new CliProvider(settings.provider as CliKind, scoutModel, settings.cliPath);
+      return new CliProvider(scoutProviderId as CliKind, scoutModel, scoutCliPath);
   }
 }

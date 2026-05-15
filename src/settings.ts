@@ -19,6 +19,12 @@ export interface GStackSettings {
   outputMode: "inline" | "new-note";
   scoutEnabled: boolean;
   scoutModel: string;
+  // Scout can run on a different provider than the main one — e.g. main = claude-cli,
+  // scout = gemini API. "inherit" means reuse main provider's credentials.
+  scoutProvider: ProviderId | "inherit";
+  scoutApiKey: string;
+  scoutCliPath: string;
+  scoutOllamaHost: string;
   contextDecayDays: number;
   compactionThreshold: number;
   cliPath: string;
@@ -33,6 +39,10 @@ export const DEFAULT_SETTINGS: GStackSettings = {
   outputMode: "inline",
   scoutEnabled: true,
   scoutModel: "gemini-2.0-flash-lite",
+  scoutProvider: "inherit",
+  scoutApiKey: "",
+  scoutCliPath: "",
+  scoutOllamaHost: "http://localhost:11434",
   contextDecayDays: 14,
   compactionThreshold: 8000,
   cliPath: "",
@@ -272,6 +282,80 @@ export class GStackSettingTab extends PluginSettingTab {
           });
       });
 
+    // Scout provider — defaults to inheriting from main, but can be set independently
+    // so users running e.g. Claude CLI for chat can still scout with a cheap API model.
+    let scoutApiKeySetting: Setting;
+    let scoutCliPathSetting: Setting;
+    let scoutOllamaSetting: Setting;
+
+    new Setting(containerEl)
+      .setName("Scout provider")
+      .setDesc("Which provider runs the scout. Use \"Inherit\" to reuse your main provider's credentials, or pick a separate one (e.g. cheap Gemini key) when the main provider is a CLI.")
+      .addDropdown((dd) => {
+        dd.addOption("inherit", "Inherit from main provider");
+        for (const [value, label] of Object.entries(PROVIDER_LABELS)) {
+          dd.addOption(value, label);
+        }
+        dd.setValue(this.plugin.settings.scoutProvider);
+        dd.onChange(async (value) => {
+          this.plugin.settings.scoutProvider = value as ProviderId | "inherit";
+          await this.plugin.saveSettings();
+          this.updateScoutUI(
+            this.plugin.settings.scoutProvider,
+            scoutApiKeySetting,
+            scoutCliPathSetting,
+            scoutOllamaSetting
+          );
+        });
+      });
+
+    scoutApiKeySetting = new Setting(containerEl)
+      .setName("Scout API key")
+      .setDesc("API key for the scout provider (only when scout uses a different provider than main).")
+      .addText((text) => {
+        text
+          .setPlaceholder("Paste scout API key")
+          .setValue(this.plugin.settings.scoutApiKey);
+        text.inputEl.type = "password";
+        text.onChange(async (value) => {
+          this.plugin.settings.scoutApiKey = value;
+          await this.plugin.saveSettings();
+        });
+      });
+
+    scoutCliPathSetting = new Setting(containerEl)
+      .setName("Scout CLI path")
+      .setDesc("Optional CLI binary path for scout. Leave blank to use PATH.")
+      .addText((text) => {
+        text
+          .setPlaceholder("auto-detect from PATH")
+          .setValue(this.plugin.settings.scoutCliPath)
+          .onChange(async (value) => {
+            this.plugin.settings.scoutCliPath = value.trim();
+            await this.plugin.saveSettings();
+          });
+      });
+
+    scoutOllamaSetting = new Setting(containerEl)
+      .setName("Scout Ollama host")
+      .setDesc("Ollama URL for scout, if scout uses Ollama.")
+      .addText((text) => {
+        text
+          .setPlaceholder("http://localhost:11434")
+          .setValue(this.plugin.settings.scoutOllamaHost)
+          .onChange(async (value) => {
+            this.plugin.settings.scoutOllamaHost = value.trim();
+            await this.plugin.saveSettings();
+          });
+      });
+
+    this.updateScoutUI(
+      this.plugin.settings.scoutProvider,
+      scoutApiKeySetting,
+      scoutCliPathSetting,
+      scoutOllamaSetting
+    );
+
     const decaySetting = new Setting(containerEl)
       .setName("Context decay")
       .setDesc("Notes older than this many days are down-scored when assembling context.");
@@ -324,5 +408,26 @@ export class GStackSettingTab extends PluginSettingTab {
     disclaimerEl.classList.toggle("gstack-hidden", !showApiKey);
     ollamaHostSetting.settingEl.classList.toggle("gstack-hidden", !showOllama);
     cliPathSetting.settingEl.classList.toggle("gstack-hidden", !showCli);
+  }
+
+  private updateScoutUI(
+    scoutProvider: ProviderId | "inherit",
+    apiKeySetting: Setting,
+    cliPathSetting: Setting,
+    ollamaSetting: Setting
+  ): void {
+    // When inheriting, hide all scout-specific credential fields
+    if (scoutProvider === "inherit") {
+      apiKeySetting.settingEl.classList.add("gstack-hidden");
+      cliPathSetting.settingEl.classList.add("gstack-hidden");
+      ollamaSetting.settingEl.classList.add("gstack-hidden");
+      return;
+    }
+    const showApiKey = isApiKeyProvider(scoutProvider);
+    const showOllama = scoutProvider === "ollama";
+    const showCli = isCliProvider(scoutProvider);
+    apiKeySetting.settingEl.classList.toggle("gstack-hidden", !showApiKey);
+    cliPathSetting.settingEl.classList.toggle("gstack-hidden", !showCli);
+    ollamaSetting.settingEl.classList.toggle("gstack-hidden", !showOllama);
   }
 }
