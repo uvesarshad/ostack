@@ -5,7 +5,8 @@ import type { ProgressReporter } from "./floating-input";
 import { getProvider, LLMMessage } from "./providers/provider-interface";
 import { buildVaultContext, formatVaultContext } from "./context-builder";
 import { applyScoutResults, scoutContext } from "./context-scout";
-import type { ChatStore, ChatSession, ChatMessage } from "./chat-store";
+import type { ChatStore, ChatSession, ChatMessage, ToolCall } from "./chat-store";
+import { runClaudeAgent } from "./agent-loop";
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -215,7 +216,11 @@ export class BarChat extends Component implements ProgressReporter {
     await this.config.chatStore.addMessage(this.currentSessionId!, "user", `/${skill.name}`);
     this.renderConversation();
 
-    await this.streamAssistantTurn();
+    if (skill.agent) {
+      await this.runAgentTurn(skill);
+    } else {
+      await this.streamAssistantTurn();
+    }
 
     if (skill.autoInsert && this.state === "done") {
       const session = this.currentSession();
@@ -287,8 +292,11 @@ export class BarChat extends Component implements ProgressReporter {
 
     const history = this.buildLLMHistory();
 
-    const provider = getProvider(this.config.settings);
-    this.abortController = new AbortController();
+    const provider = getProvider(this.config.settings, getVaultBasePath(this.config.app));
+    // Capture locally so stop button nulling out this.abortController doesn't
+    // throw on .signal access in the for-await loop.
+    const controller = new AbortController();
+    this.abortController = controller;
 
     try {
       const stream = provider.stream({
@@ -297,7 +305,7 @@ export class BarChat extends Component implements ProgressReporter {
       });
 
       for await (const token of stream) {
-        if (this.abortController.signal.aborted) break;
+        if (controller.signal.aborted) break;
         this.streamingContent += token;
         if (this.streamingAssistantEl) {
           this.renderStreamingText(this.streamingAssistantEl, this.streamingContent);
@@ -315,7 +323,112 @@ export class BarChat extends Component implements ProgressReporter {
       }
       this.setState("error");
     } finally {
-      this.abortController = null;
+      if (this.abortController === controller) this.abortController = null;
+    }
+  }
+
+  // Agent skill turn. Three paths:
+  //   - "claude" (API)       → our streaming agent loop with vault tools
+  //   - "claude-cli" / "codex-cli" → fall through to normal streaming; the CLI
+  //                            is itself an agent with its own native tools
+  //   - anything else        → tell the user to switch provider
+  // For the agent-loop path we collect structured tool calls and persist them
+  // separately from the assistant text so the bubble re-renders correctly
+  // after a reload.
+  private async runAgentTurn(skill: Skill): Promise<void> {
+    if (!this.currentSessionId) return;
+
+    const provider = this.config.settings.provider;
+
+    // CLI providers are agents natively — let the regular streaming path drive
+    // them. The skill's system prompt tells the CLI what to do.
+    if (provider === "claude-cli" || provider === "codex-cli") {
+      await this.streamAssistantTurn();
+      return;
+    }
+    if (provider !== "claude") {
+      this.appendStatusMessage(
+        `Skill "${skill.name}" is an agent. Use the Claude API, Claude CLI, or Codex CLI provider (Settings → ogstack).`,
+        true
+      );
+      return;
+    }
+
+    this.setState("streaming");
+
+    const bubble = this.conversationEl.createDiv({
+      cls: "gstack-bar2-msg gstack-bar2-msg-assistant gstack-bar2-msg-streaming",
+    });
+    const toolsEl = bubble.createDiv({ cls: "gstack-bar2-agent-tools" });
+    const textEl = bubble.createDiv({ cls: "gstack-bar2-agent-text" });
+    this.scrollToBottom();
+
+    const controller = new AbortController();
+    this.abortController = controller;
+
+    const textChunks: string[] = [];
+    const toolCalls: ToolCall[] = [];
+    const inflightToolElByIndex: HTMLElement[] = [];
+
+    try {
+      const events = runClaudeAgent({
+        app: this.config.app,
+        apiKey: this.config.settings.apiKey,
+        model: this.config.settings.model || "claude-sonnet-4-6",
+        systemPrompt: this.currentSystemPrompt,
+        userMessage: `Run skill: /${skill.name}`,
+        priorMessages: this.buildLLMHistory().slice(0, -1), // exclude the just-added /skill turn
+        allowedTools: skill.allowedTools,
+        signal: controller.signal,
+      });
+
+      for await (const evt of events) {
+        if (controller.signal.aborted) break;
+
+        if (evt.type === "text_delta") {
+          textChunks.push(evt.text);
+          textEl.textContent = textChunks.join("");
+        } else if (evt.type === "tool_call") {
+          const summary = `🔧 ${evt.name}(${formatToolInput(evt.input)})`;
+          const line = toolsEl.createDiv({ cls: "gstack-bar2-agent-tool-call", text: summary });
+          inflightToolElByIndex.push(line);
+          toolCalls.push({ name: evt.name, input: evt.input, output: "", isError: false });
+        } else if (evt.type === "tool_result") {
+          const idx = toolCalls.findIndex((c, i) => c.output === "" && c.name === evt.name && inflightToolElByIndex[i]);
+          if (idx !== -1) {
+            toolCalls[idx].output = evt.output;
+            toolCalls[idx].isError = evt.isError;
+            const line = inflightToolElByIndex[idx];
+            line.appendChild(document.createTextNode(evt.isError ? " ✕" : " ✓"));
+            if (evt.isError) line.addClass("gstack-bar2-agent-tool-error");
+            line.title = evt.output.length > 200 ? evt.output.slice(0, 200) + "…" : evt.output;
+          }
+        } else if (evt.type === "error") {
+          textEl.createSpan({ text: `✕ ${evt.message}`, cls: "gstack-bar2-msg-error" });
+        }
+        this.scrollToBottom();
+      }
+
+      if (controller.signal.aborted) {
+        textEl.createSpan({ text: " (stopped)", cls: "gstack-bar2-msg-status" });
+      }
+
+      // Persist structured: text content + toolCalls as a separate field.
+      // renderStoredMessage() picks toolCalls up and renders them styled.
+      await this.config.chatStore.addMessage(
+        this.currentSessionId,
+        "assistant",
+        textChunks.join(""),
+        toolCalls.length > 0 ? toolCalls : undefined
+      );
+      this.setState(controller.signal.aborted ? "done" : "done");
+      await this.renderConversation();
+    } catch (err: unknown) {
+      const msg = (err as Error).message ?? "Agent failed";
+      textEl.createSpan({ text: `✕ ${msg}`, cls: "gstack-bar2-msg-error" });
+      this.setState("error");
+    } finally {
+      if (this.abortController === controller) this.abortController = null;
     }
   }
 
@@ -370,6 +483,12 @@ export class BarChat extends Component implements ProgressReporter {
     const asks = extractAsks(msg.content);
     const visible = stripAsks(msg.content);
 
+    // If this turn had agent tool calls, render them styled before the text.
+    // Otherwise after reload they'd appear as plain markdown lines.
+    if (msg.toolCalls && msg.toolCalls.length > 0) {
+      this.renderPersistedToolCalls(el, msg.toolCalls);
+    }
+
     const contentEl = el.createDiv({ cls: "gstack-bar2-msg-content" });
     if (visible) {
       await MarkdownRenderer.render(this.config.app, visible, contentEl, "", this);
@@ -389,6 +508,21 @@ export class BarChat extends Component implements ProgressReporter {
     // Cursor is injected by CSS (.gstack-bar2-msg-streaming::after) so it always
     // sits at the actual end of the wrapped text. We just keep textContent in sync.
     el.textContent = stripAsks(content);
+  }
+
+  private renderPersistedToolCalls(
+    parent: HTMLElement,
+    calls: import("./chat-store").ToolCall[]
+  ): void {
+    const toolsEl = parent.createDiv({ cls: "gstack-bar2-agent-tools" });
+    for (const t of calls) {
+      const summary = `🔧 ${t.name}(${formatToolInput(t.input)}) ${t.isError ? "✕" : "✓"}`;
+      const line = toolsEl.createDiv({
+        cls: "gstack-bar2-agent-tool-call" + (t.isError ? " gstack-bar2-agent-tool-error" : ""),
+        text: summary,
+      });
+      line.title = t.output.length > 200 ? t.output.slice(0, 200) + "…" : t.output;
+    }
   }
 
   private renderActionButtons(parent: HTMLElement, content: string): void {
@@ -812,7 +946,7 @@ export class BarChat extends Component implements ProgressReporter {
 
     const statusEl = this.appendStatusMessage("Compacting older messages…");
     try {
-      const provider = getProvider(this.config.settings);
+      const provider = getProvider(this.config.settings, getVaultBasePath(this.config.app));
       let summary = "";
       const stream = provider.stream({
         systemPrompt: "You compress conversations losslessly into concise bullet points.",
@@ -850,6 +984,32 @@ function extractAsks(text: string): string[] {
     if (q) out.push(q);
   }
   return out;
+}
+
+function formatToolInput(input: Record<string, unknown>): string {
+  const keys = Object.keys(input);
+  if (keys.length === 0) return "";
+  return keys
+    .map((k) => {
+      const v = input[k];
+      const display = typeof v === "string" ? truncate(v, 60) : JSON.stringify(v);
+      return `${k}=${display}`;
+    })
+    .join(", ");
+}
+
+function truncate(s: string, n: number): string {
+  return s.length > n ? s.slice(0, n - 1) + "…" : s;
+}
+
+// Resolves the vault root on disk so we can run CLI providers from inside the
+// vault. Without this, child_process.spawn inherits Obsidian's install dir as
+// cwd, which breaks codex/claude-cli's "I'm not in a project" heuristics.
+function getVaultBasePath(app: App): string | undefined {
+  const adapter = app.vault.adapter as { getBasePath?: () => string; basePath?: string };
+  if (typeof adapter.getBasePath === "function") return adapter.getBasePath();
+  if (typeof adapter.basePath === "string") return adapter.basePath;
+  return undefined;
 }
 
 function stripAsks(text: string): string {

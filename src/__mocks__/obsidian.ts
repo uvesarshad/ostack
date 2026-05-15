@@ -120,15 +120,19 @@ export class Vault {
   getFileByPath = vi.fn();
   read = vi.fn().mockResolvedValue("");
   cachedRead = vi.fn().mockResolvedValue("");
+  modify = vi.fn().mockResolvedValue(undefined);
   create = vi.fn().mockResolvedValue({});
   createFolder = vi.fn().mockResolvedValue(undefined);
   adapter = {
     exists: vi.fn().mockResolvedValue(false),
     mkdir: vi.fn().mockResolvedValue(undefined),
     read: vi.fn().mockResolvedValue(""),
+    write: vi.fn().mockResolvedValue(undefined),
+    remove: vi.fn().mockResolvedValue(undefined),
     list: vi.fn().mockResolvedValue({ files: [], folders: [] }),
   };
   getFiles = vi.fn().mockReturnValue([]);
+  getMarkdownFiles = vi.fn().mockReturnValue([]);
 }
 
 export class Workspace {
@@ -160,6 +164,15 @@ export class TFile {
     this.extension = this.name.includes(".") ? this.name.split(".").pop() ?? "" : "";
     this.stat = { mtime: Date.now(), ctime: Date.now(), size: 0 };
     this.parent = null;
+  }
+}
+
+export class TFolder {
+  path: string;
+  name: string;
+  constructor(path: string) {
+    this.path = path;
+    this.name = path.split("/").pop() ?? path;
   }
 }
 

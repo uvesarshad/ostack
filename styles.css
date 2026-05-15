@@ -837,7 +837,7 @@
 
 .gstack-bar2-msg {
   font-size: var(--font-ui-small);
-  line-height: 1.55;
+  line-height: 1.4;
   word-wrap: break-word;
 }
 
@@ -869,8 +869,33 @@
 .gstack-bar2-msg-content {
   color: var(--text-normal);
 }
-.gstack-bar2-msg-content p:first-child { margin-top: 0; }
-.gstack-bar2-msg-content p:last-child { margin-bottom: 0; }
+/* Tighten Obsidian's default block spacing so the bar's chat bubbles aren't
+   airy. MarkdownRenderer emits <p>, <ul>, <h*>, etc. with their normal margins. */
+.gstack-bar2-msg-content > :first-child { margin-top: 0; }
+.gstack-bar2-msg-content > :last-child { margin-bottom: 0; }
+.gstack-bar2-msg-content p,
+.gstack-bar2-msg-content ul,
+.gstack-bar2-msg-content ol,
+.gstack-bar2-msg-content blockquote,
+.gstack-bar2-msg-content pre {
+  margin: 0.35em 0;
+}
+.gstack-bar2-msg-content h1,
+.gstack-bar2-msg-content h2,
+.gstack-bar2-msg-content h3,
+.gstack-bar2-msg-content h4,
+.gstack-bar2-msg-content h5,
+.gstack-bar2-msg-content h6 {
+  margin: 0.6em 0 0.25em;
+  line-height: 1.25;
+}
+.gstack-bar2-msg-content li { margin: 0.15em 0; }
+.gstack-bar2-msg-content li > p { margin: 0; }
+.gstack-bar2-msg-content ul,
+.gstack-bar2-msg-content ol { padding-left: 1.4em; }
+.gstack-bar2-msg-content pre { padding: 6px 8px; }
+.gstack-bar2-msg-content code { font-size: 0.9em; }
+.gstack-bar2-msg-content hr { margin: 0.6em 0; }
 
 .gstack-bar2-msg-status {
   align-self: center;
@@ -915,6 +940,28 @@
   color: var(--text-normal);
   border-color: var(--text-muted);
 }
+
+/* Agent tool-call lines: visible step-by-step trace of what the agent did */
+.gstack-bar2-agent-tools {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 6px;
+}
+.gstack-bar2-agent-tool-call {
+  font-family: var(--font-monospace);
+  font-size: 11px;
+  color: var(--text-muted);
+  padding: 2px 6px;
+  border-left: 2px solid var(--background-modifier-border);
+  background: var(--background-secondary);
+  border-radius: 3px;
+}
+.gstack-bar2-agent-tool-error {
+  color: var(--text-error);
+  border-left-color: var(--text-error);
+}
+.gstack-bar2-agent-text { white-space: pre-wrap; }
 
 /* ASK question UI */
 .gstack-bar2-ask {

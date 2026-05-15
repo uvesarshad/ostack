@@ -47,7 +47,9 @@ ${candidateList}
 Paths for reference:
 ${topCandidates.map((c) => `${topCandidates.indexOf(c) + 1}. ${c.file.path}`).join("\n")}`;
 
-  const provider = getScoutProvider(settings);
+  const adapter = app.vault.adapter as { getBasePath?: () => string; basePath?: string };
+  const cwd = typeof adapter.getBasePath === "function" ? adapter.getBasePath() : adapter.basePath;
+  const provider = getScoutProvider(settings, cwd);
 
   let raceResult: string | null;
   try {

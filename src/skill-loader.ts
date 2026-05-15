@@ -12,6 +12,8 @@ export interface Skill {
   systemPrompt: string;
   mode: SkillMode;          // "interactive" can pause via <ASK>
   autoInsert: boolean;      // true = also auto-insert into note (old behavior)
+  agent: boolean;           // true = run via tool-using agent loop (Claude API only)
+  allowedTools: string[] | null;  // null/empty = all tools; otherwise allow-list
 }
 
 interface ParsedFrontmatter {
@@ -22,6 +24,8 @@ interface ParsedFrontmatter {
   max_tokens?: string;
   mode?: string;
   auto_insert?: string;
+  agent?: string;
+  allowed_tools?: string;
 }
 
 function parseFrontmatter(content: string): { fm: ParsedFrontmatter; body: string } | null {
@@ -60,6 +64,8 @@ export function parseSKILL(content: string, sourcePath: string): Skill | null {
   const maxTokens = fm.max_tokens ? parseInt(fm.max_tokens, 10) : null;
   const mode: SkillMode = fm.mode === "interactive" ? "interactive" : "oneshot";
   const autoInsert = fm.auto_insert === "true";
+  const agent = fm.agent === "true";
+  const allowedTools = parseAllowedTools(fm.allowed_tools);
 
   return {
     name: fm.name,
@@ -70,7 +76,18 @@ export function parseSKILL(content: string, sourcePath: string): Skill | null {
     systemPrompt: body,
     mode,
     autoInsert,
+    agent,
+    allowedTools,
   };
+}
+
+function parseAllowedTools(raw: string | undefined): string[] | null {
+  if (!raw) return null;
+  // Accept "[a, b, c]" or "a, b, c"
+  const stripped = raw.trim().replace(/^\[|\]$/g, "");
+  if (!stripped) return null;
+  const tools = stripped.split(",").map((s) => s.trim().replace(/^["']|["']$/g, "")).filter(Boolean);
+  return tools.length > 0 ? tools : null;
 }
 
 export interface RegisteredCommand {

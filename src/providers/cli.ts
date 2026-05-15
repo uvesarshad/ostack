@@ -74,7 +74,8 @@ export class CliProvider implements LLMProvider {
   constructor(
     private kind: CliKind,
     private model: string,
-    private cliPath: string
+    private cliPath: string,
+    private cwd?: string
   ) {}
 
   async *stream(request: LLMRequest): AsyncGenerator<string, void, unknown> {
@@ -91,9 +92,13 @@ export class CliProvider implements LLMProvider {
 
     let proc: SpawnedProc;
     try {
-      // shell: true on Windows so PATH-resolved binaries (.cmd, .bat) work
+      // shell: true on Windows so PATH-resolved binaries (.cmd, .bat) work.
+      // cwd is the vault root so the CLI sees the user's notes, not the
+      // Obsidian app install directory it would inherit from our process.
       const isWindows = typeof process !== "undefined" && process.platform === "win32";
-      proc = cp.spawn(binary, args, { shell: isWindows });
+      const spawnOpts: Record<string, unknown> = { shell: isWindows };
+      if (this.cwd) spawnOpts.cwd = this.cwd;
+      proc = cp.spawn(binary, args, spawnOpts);
     } catch (err: unknown) {
       throw { status: 0, body: `Failed to spawn ${binary}: ${(err as Error).message}. Run \`${binary} --version\` in your terminal to verify the CLI is installed.` };
     }

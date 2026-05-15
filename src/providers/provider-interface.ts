@@ -22,7 +22,7 @@ export interface LLMProvider {
   stream(request: LLMRequest): AsyncGenerator<string, void, unknown>;
 }
 
-export function getProvider(settings: GStackSettings): LLMProvider {
+export function getProvider(settings: GStackSettings, cwd?: string): LLMProvider {
   const model = settings.model;
   switch (settings.provider) {
     case "claude":
@@ -38,11 +38,11 @@ export function getProvider(settings: GStackSettings): LLMProvider {
     case "claude-cli":
     case "codex-cli":
     case "gemini-cli":
-      return new CliProvider(settings.provider as CliKind, model, settings.cliPath);
+      return new CliProvider(settings.provider as CliKind, model, settings.cliPath, cwd);
   }
 }
 
-export function getScoutProvider(settings: GStackSettings): LLMProvider {
+export function getScoutProvider(settings: GStackSettings, cwd?: string): LLMProvider {
   const scoutModel = settings.scoutModel || "gemini-2.0-flash-lite";
 
   // Resolve which provider + credentials the scout should use. "inherit" means
@@ -67,6 +67,6 @@ export function getScoutProvider(settings: GStackSettings): LLMProvider {
     case "claude-cli":
     case "codex-cli":
     case "gemini-cli":
-      return new CliProvider(scoutProviderId as CliKind, scoutModel, scoutCliPath);
+      return new CliProvider(scoutProviderId as CliKind, scoutModel, scoutCliPath, cwd);
   }
 }

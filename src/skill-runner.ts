@@ -76,7 +76,9 @@ export async function runSkill(
 
     const systemPrompt = skill.systemPrompt.replace("{{VAULT_CONTEXT}}", vaultContextStr);
 
-    const provider = getProvider(settings);
+    const adapter = app.vault.adapter as { getBasePath?: () => string; basePath?: string };
+    const cwd = typeof adapter.getBasePath === "function" ? adapter.getBasePath() : adapter.basePath;
+    const provider = getProvider(settings, cwd);
     const tokenStream = provider.stream({
       systemPrompt,
       userMessage: "Execute this skill now.",

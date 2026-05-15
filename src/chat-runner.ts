@@ -52,7 +52,7 @@ export async function runChatMessage(
       { role: "user", content: userText },
     ];
 
-    const provider = getProvider(settings);
+    const provider = getProvider(settings, vaultBasePath(app));
     const stream = provider.stream({ systemPrompt, messages });
 
     for await (const token of stream) {
@@ -69,6 +69,13 @@ export async function runChatMessage(
       onError("Something went wrong");
     }
   }
+}
+
+function vaultBasePath(app: App): string | undefined {
+  const adapter = app.vault.adapter as { getBasePath?: () => string; basePath?: string };
+  if (typeof adapter.getBasePath === "function") return adapter.getBasePath();
+  if (typeof adapter.basePath === "string") return adapter.basePath;
+  return undefined;
 }
 
 // Extract [[Wiki Link]] references from message text and return their vault contents
