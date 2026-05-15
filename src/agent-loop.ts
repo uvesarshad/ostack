@@ -32,8 +32,12 @@ export async function* runClaudeAgent(args: {
   priorMessages?: { role: "user" | "assistant"; content: string }[];
   allowedTools: string[] | null;
   signal?: AbortSignal;
+  // When false (default), write_note / append_note tools refuse to run.
+  // See settings.allowAgentWrites.
+  allowWrites?: boolean;
 }): AsyncGenerator<AgentEvent, void, unknown> {
   const { app, apiKey, model, systemPrompt, userMessage, priorMessages, allowedTools, signal } = args;
+  const allowWrites = args.allowWrites ?? false;
 
   const tools = resolveTools(allowedTools).map((t) => ({
     name: t.name,
@@ -111,7 +115,7 @@ export async function* runClaudeAgent(args: {
       let output: string;
       let isError = false;
       try {
-        output = await executeVaultTool(app, tu.name, tu.input);
+        output = await executeVaultTool(app, tu.name, tu.input, { allowWrites });
         if (output.startsWith("ERROR:")) isError = true;
       } catch (err: unknown) {
         output = `ERROR: ${(err as Error).message}`;

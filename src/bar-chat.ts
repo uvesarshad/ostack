@@ -7,6 +7,7 @@ import { buildVaultContext, formatVaultContext } from "./context-builder";
 import { applyScoutResults, scoutContext } from "./context-scout";
 import type { ChatStore, ChatSession, ChatMessage, ToolCall } from "./chat-store";
 import { runClaudeAgent } from "./agent-loop";
+import { resolveMentions } from "./mention-resolver";
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -280,7 +281,7 @@ export class BarChat extends Component implements ProgressReporter {
 
   // ── Streaming loop ───────────────────────────────────────────────
 
-  private async streamAssistantTurn(): Promise<void> {
+  private async streamAssistantTurn(systemPromptOverride?: string): Promise<void> {
     if (!this.currentSessionId) return;
     this.setState("streaming");
     this.streamingContent = "";
@@ -300,7 +301,7 @@ export class BarChat extends Component implements ProgressReporter {
 
     try {
       const stream = provider.stream({
-        systemPrompt: this.currentSystemPrompt || (await this.buildFreeChatSystemPrompt()),
+        systemPrompt: systemPromptOverride ?? this.currentSystemPrompt ?? (await this.buildFreeChatSystemPrompt()),
         messages: history,
       });
 
@@ -368,7 +369,10 @@ export class BarChat extends Component implements ProgressReporter {
 
     const textChunks: string[] = [];
     const toolCalls: ToolCall[] = [];
-    const inflightToolElByIndex: HTMLElement[] = [];
+    // Map tool_use_id → {index in toolCalls, DOM element}. Keyed by id so two
+    // parallel calls to the same tool (or with empty-string results) match
+    // their results unambiguously.
+    const inflight = new Map<string, { idx: number; el: HTMLElement }>();
 
     try {
       const events = runClaudeAgent({
@@ -380,6 +384,7 @@ export class BarChat extends Component implements ProgressReporter {
         priorMessages: this.buildLLMHistory().slice(0, -1), // exclude the just-added /skill turn
         allowedTools: skill.allowedTools,
         signal: controller.signal,
+        allowWrites: this.config.settings.allowAgentWrites,
       });
 
       for await (const evt of events) {
@@ -391,17 +396,18 @@ export class BarChat extends Component implements ProgressReporter {
         } else if (evt.type === "tool_call") {
           const summary = `🔧 ${evt.name}(${formatToolInput(evt.input)})`;
           const line = toolsEl.createDiv({ cls: "gstack-bar2-agent-tool-call", text: summary });
-          inflightToolElByIndex.push(line);
-          toolCalls.push({ name: evt.name, input: evt.input, output: "", isError: false });
+          const idx = toolCalls.length;
+          toolCalls.push({ id: evt.id, name: evt.name, input: evt.input, output: "", isError: false });
+          inflight.set(evt.id, { idx, el: line });
         } else if (evt.type === "tool_result") {
-          const idx = toolCalls.findIndex((c, i) => c.output === "" && c.name === evt.name && inflightToolElByIndex[i]);
-          if (idx !== -1) {
-            toolCalls[idx].output = evt.output;
-            toolCalls[idx].isError = evt.isError;
-            const line = inflightToolElByIndex[idx];
-            line.appendChild(document.createTextNode(evt.isError ? " ✕" : " ✓"));
-            if (evt.isError) line.addClass("gstack-bar2-agent-tool-error");
-            line.title = evt.output.length > 200 ? evt.output.slice(0, 200) + "…" : evt.output;
+          const entry = inflight.get(evt.id);
+          if (entry) {
+            toolCalls[entry.idx].output = evt.output;
+            toolCalls[entry.idx].isError = evt.isError;
+            entry.el.appendChild(document.createTextNode(evt.isError ? " ✕" : " ✓"));
+            if (evt.isError) entry.el.addClass("gstack-bar2-agent-tool-error");
+            entry.el.title = evt.output.length > 200 ? evt.output.slice(0, 200) + "…" : evt.output;
+            inflight.delete(evt.id);
           }
         } else if (evt.type === "error") {
           textEl.createSpan({ text: `✕ ${evt.message}`, cls: "gstack-bar2-msg-error" });
@@ -568,9 +574,14 @@ export class BarChat extends Component implements ProgressReporter {
       inputs.forEach((i) => { i.disabled = true; });
 
       if (!this.currentSessionId) return;
-      await this.config.chatStore.addMessage(this.currentSessionId, "user", answers.join("\n\n"));
+      const answerText = answers.join("\n\n");
+      const mentionBlock = await resolveMentions(answerText, this.config.app);
+      const systemPromptForTurn = mentionBlock
+        ? `${this.currentSystemPrompt}\n\n${mentionBlock}`
+        : this.currentSystemPrompt;
+      await this.config.chatStore.addMessage(this.currentSessionId, "user", answerText);
       await this.renderConversation();
-      await this.streamAssistantTurn();
+      await this.streamAssistantTurn(systemPromptForTurn);
     });
 
     setTimeout(() => inputs[0]?.focus(), 50);
@@ -690,9 +701,18 @@ export class BarChat extends Component implements ProgressReporter {
       this.currentSystemPrompt = await this.buildFreeChatSystemPrompt();
     }
 
+    // Resolve @[[Note]] mentions in the user message and append their content
+    // to the system prompt for this turn so the model sees the actual content
+    // rather than just the literal `[[Name]]` string. Sidebar does the same
+    // via chat-runner — this keeps the bar at feature parity.
+    const mentionBlock = await resolveMentions(text, this.config.app);
+    const systemPromptForTurn = mentionBlock
+      ? `${this.currentSystemPrompt}\n\n${mentionBlock}`
+      : this.currentSystemPrompt;
+
     await this.config.chatStore.addMessage(this.currentSessionId!, "user", text);
     await this.renderConversation();
-    await this.streamAssistantTurn();
+    await this.streamAssistantTurn(systemPromptForTurn);
   }
 
   private async buildFreeChatSystemPrompt(): Promise<string> {

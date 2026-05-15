@@ -1,4 +1,5 @@
 import { App, Plugin, PluginSettingTab, Setting } from "obsidian";
+import { isSafeCliPath, isSafeModelName } from "./providers/cli";
 
 export type ProviderId =
   | "claude"
@@ -28,6 +29,10 @@ export interface GStackSettings {
   contextDecayDays: number;
   compactionThreshold: number;
   cliPath: string;
+  // Agent skills (mode: agent in SKILL.md) can be granted write_note / append_note
+  // tools. Off by default — a prompt-injected agent should not silently overwrite
+  // vault files. When off, write tools return an error the agent reports back.
+  allowAgentWrites: boolean;
 }
 
 export const DEFAULT_SETTINGS: GStackSettings = {
@@ -46,6 +51,7 @@ export const DEFAULT_SETTINGS: GStackSettings = {
   contextDecayDays: 14,
   compactionThreshold: 8000,
   cliPath: "",
+  allowAgentWrites: false,
 };
 
 const PROVIDER_LABELS: Record<ProviderId, string> = {
@@ -162,7 +168,7 @@ export class GStackSettingTab extends PluginSettingTab {
 
     apiKeyDisclaimerEl = containerEl.createEl("p", {
       cls: "gstack-api-disclaimer",
-      text: "⚠ Security notice: API keys are stored in plaintext in your vault's data.json. Do not sync this vault to untrusted services or share it publicly.",
+      text: "⚠ Security notice: API keys are stored in plaintext at .obsidian/plugins/ogstack/data.json inside your vault. Obsidian Sync excludes plugin data by default, but third-party sync (Git, Dropbox, iCloud, etc.) will carry the key — exclude this file if you share the vault.",
     });
 
     const modelSetting = new Setting(containerEl)
@@ -177,7 +183,15 @@ export class GStackSettingTab extends PluginSettingTab {
         .setPlaceholder(`Default (${MODEL_PLACEHOLDERS[this.plugin.settings.provider]})`)
         .setValue(this.plugin.settings.model);
       text.onChange(async (value) => {
-        this.plugin.settings.model = value;
+        const trimmed = value.trim();
+        if (!isSafeModelName(trimmed)) {
+          modelSetting.setDesc("Model name rejected — allowed characters: letters, digits, ._:-/");
+          modelSetting.settingEl.classList.add("mod-warning");
+          return;
+        }
+        modelSetting.setDesc(`Leave blank for provider default (${MODEL_PLACEHOLDERS[this.plugin.settings.provider]}).`);
+        modelSetting.settingEl.classList.remove("mod-warning");
+        this.plugin.settings.model = trimmed;
         await this.plugin.saveSettings();
       });
     });
@@ -213,14 +227,22 @@ export class GStackSettingTab extends PluginSettingTab {
 
     cliPathSetting = new Setting(containerEl)
       .setName("CLI binary path")
-      .setDesc("Optional. Leave blank to use the system PATH (recommended). Override only if the CLI is installed in a non-standard location.");
+      .setDesc("Optional. Leave blank to use the system PATH (recommended). Override only if the CLI is installed in a non-standard location. Spaces and shell metacharacters are not allowed.");
 
     cliPathSetting.addText((text) => {
       text
         .setPlaceholder("auto-detect from PATH")
         .setValue(this.plugin.settings.cliPath)
         .onChange(async (value) => {
-          this.plugin.settings.cliPath = value.trim();
+          const trimmed = value.trim();
+          if (!isSafeCliPath(trimmed)) {
+            cliPathSetting.setDesc("Path rejected — contains spaces or shell metacharacters. Move the binary somewhere safe, or use PATH.");
+            cliPathSetting.settingEl.classList.add("mod-warning");
+            return;
+          }
+          cliPathSetting.setDesc("Optional. Leave blank to use the system PATH (recommended). Override only if the CLI is installed in a non-standard location. Spaces and shell metacharacters are not allowed.");
+          cliPathSetting.settingEl.classList.remove("mod-warning");
+          this.plugin.settings.cliPath = trimmed;
           await this.plugin.saveSettings();
         });
     });
@@ -389,6 +411,21 @@ export class GStackSettingTab extends PluginSettingTab {
         dd.setValue(this.plugin.settings.outputMode);
         dd.onChange(async (value) => {
           this.plugin.settings.outputMode = value as GStackSettings["outputMode"];
+          await this.plugin.saveSettings();
+        });
+      });
+
+    // --- Agent safety ---
+    new Setting(containerEl).setName("Agent safety").setHeading();
+
+    new Setting(containerEl)
+      .setName("Allow agent file writes")
+      .setDesc(
+        "When ON, agent skills (mode: agent) can call write_note and append_note to create or overwrite notes. When OFF (default), those tools return an error and the agent reports back without writing. Recommended OFF — a prompt-injected agent should not silently modify your vault."
+      )
+      .addToggle((toggle) => {
+        toggle.setValue(this.plugin.settings.allowAgentWrites).onChange(async (value) => {
+          this.plugin.settings.allowAgentWrites = value;
           await this.plugin.saveSettings();
         });
       });

@@ -44,30 +44,59 @@ export class ClaudeProvider implements LLMProvider {
     tools: ClaudeToolDef[],
     signal?: AbortSignal
   ): AsyncGenerator<ClaudeStreamEvent, void, unknown> {
-    const response = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": this.apiKey,
-        "anthropic-version": "2023-06-01",
-      },
-      body: JSON.stringify({
-        model: this.model,
-        max_tokens: 4096,
-        system: systemPrompt,
-        messages,
-        tools,
-        stream: true,
-      }),
-      signal,
-    });
+    // Combine the caller's signal with a 120s timeout so a hung stream can't
+    // wedge the agent loop forever. Either source aborts the underlying fetch.
+    const timeoutController = new AbortController();
+    const timeoutId = setTimeout(() => timeoutController.abort(), 120_000);
+    const onCallerAbort = () => timeoutController.abort();
+    if (signal) {
+      if (signal.aborted) timeoutController.abort();
+      else signal.addEventListener("abort", onCallerAbort, { once: true });
+    }
+
+    let response: Response;
+    try {
+      response = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": this.apiKey,
+          "anthropic-version": "2023-06-01",
+        },
+        body: JSON.stringify({
+          model: this.model,
+          max_tokens: 4096,
+          system: systemPrompt,
+          messages,
+          tools,
+          stream: true,
+        }),
+        signal: timeoutController.signal,
+      });
+    } catch (err: unknown) {
+      clearTimeout(timeoutId);
+      signal?.removeEventListener("abort", onCallerAbort);
+      if ((err as { name?: string }).name === "AbortError") {
+        // Distinguish caller-cancelled vs timeout — caller signal stays set,
+        // timeout fires through timeoutController only.
+        if (signal?.aborted) throw err;
+        throw new Error("timeout");
+      }
+      throw err;
+    }
     if (!response.ok) {
+      clearTimeout(timeoutId);
+      signal?.removeEventListener("abort", onCallerAbort);
       const body = await response.text();
       throw { status: response.status, body };
     }
 
     const reader = response.body?.getReader();
-    if (!reader) return;
+    if (!reader) {
+      clearTimeout(timeoutId);
+      signal?.removeEventListener("abort", onCallerAbort);
+      return;
+    }
     const decoder = new TextDecoder();
 
     // Per-block scratch state. Claude sends content_block_start with the block
@@ -135,6 +164,8 @@ export class ClaudeProvider implements LLMProvider {
         }
       }
     } finally {
+      clearTimeout(timeoutId);
+      signal?.removeEventListener("abort", onCallerAbort);
       reader.releaseLock();
     }
   }

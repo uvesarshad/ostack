@@ -231,6 +231,7 @@ Rules:
 - Only use facts present in the notes. Never invent vault content.
 - Stop calling tools as soon as you have enough to answer.
 - Keep your final answer focused — no recap of every tool call.
+- If write_note or append_note returns "agent file writes are disabled", do NOT retry. Tell the user the setting is off (Settings → ogstack → Agent safety) and offer the proposed change as a markdown block they can paste themselves.
 
 {{VAULT_CONTEXT}}`,
   },

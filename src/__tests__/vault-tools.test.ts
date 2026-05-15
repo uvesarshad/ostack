@@ -64,13 +64,13 @@ describe("executeVaultTool — read_note", () => {
   });
 });
 
-describe("executeVaultTool — write_note", () => {
+describe("executeVaultTool — write_note (writes enabled)", () => {
   let app: App;
   beforeEach(() => { app = makeApp(); });
 
   it("creates a new note when the file doesn't exist", async () => {
     app.vault.getAbstractFileByPath = vi.fn().mockReturnValue(null);
-    const result = await executeVaultTool(app, "write_note", { path: "draft.md", content: "hi" });
+    const result = await executeVaultTool(app, "write_note", { path: "draft.md", content: "hi" }, { allowWrites: true });
     expect(app.vault.create).toHaveBeenCalledWith("draft.md", "hi");
     expect(result).toMatch(/^created /);
   });
@@ -78,7 +78,7 @@ describe("executeVaultTool — write_note", () => {
   it("overwrites an existing note", async () => {
     const file = new TFile("draft.md");
     app.vault.getAbstractFileByPath = vi.fn().mockReturnValue(file);
-    const result = await executeVaultTool(app, "write_note", { path: "draft.md", content: "new" });
+    const result = await executeVaultTool(app, "write_note", { path: "draft.md", content: "new" }, { allowWrites: true });
     expect(app.vault.modify).toHaveBeenCalledWith(file, "new");
     expect(result).toMatch(/^wrote /);
   });
@@ -89,12 +89,44 @@ describe("executeVaultTool — write_note", () => {
       if (p === "Inbox") return null;
       return null;
     });
-    await executeVaultTool(app, "write_note", { path: "Inbox/x.md", content: "y" });
+    await executeVaultTool(app, "write_note", { path: "Inbox/x.md", content: "y" }, { allowWrites: true });
     expect(app.vault.adapter.mkdir).toHaveBeenCalledWith("Inbox");
   });
 });
 
-describe("executeVaultTool — append_note", () => {
+describe("executeVaultTool — write gate", () => {
+  let app: App;
+  beforeEach(() => { app = makeApp(); });
+
+  it("refuses write_note by default (allowWrites omitted)", async () => {
+    const result = await executeVaultTool(app, "write_note", { path: "draft.md", content: "x" });
+    expect(result).toMatch(/^ERROR: agent file writes are disabled/);
+    expect(app.vault.create).not.toHaveBeenCalled();
+    expect(app.vault.modify).not.toHaveBeenCalled();
+  });
+
+  it("refuses write_note when allowWrites is false", async () => {
+    const result = await executeVaultTool(app, "write_note", { path: "draft.md", content: "x" }, { allowWrites: false });
+    expect(result).toMatch(/^ERROR: agent file writes are disabled/);
+  });
+
+  it("refuses append_note by default", async () => {
+    const result = await executeVaultTool(app, "append_note", { path: "log.md", content: "x" });
+    expect(result).toMatch(/^ERROR: agent file writes are disabled/);
+    expect(app.vault.create).not.toHaveBeenCalled();
+    expect(app.vault.modify).not.toHaveBeenCalled();
+  });
+
+  it("still permits read tools when writes are denied", async () => {
+    const file = new TFile("a.md");
+    app.vault.getAbstractFileByPath = vi.fn().mockReturnValue(file);
+    app.vault.read = vi.fn().mockResolvedValue("hello");
+    const result = await executeVaultTool(app, "read_note", { path: "a.md" }, { allowWrites: false });
+    expect(result).toBe("hello");
+  });
+});
+
+describe("executeVaultTool — append_note (writes enabled)", () => {
   let app: App;
   beforeEach(() => { app = makeApp(); });
 
@@ -102,7 +134,7 @@ describe("executeVaultTool — append_note", () => {
     const file = new TFile("log.md");
     app.vault.getAbstractFileByPath = vi.fn().mockReturnValue(file);
     app.vault.read = vi.fn().mockResolvedValue("first line");
-    await executeVaultTool(app, "append_note", { path: "log.md", content: "second" });
+    await executeVaultTool(app, "append_note", { path: "log.md", content: "second" }, { allowWrites: true });
     expect(app.vault.modify).toHaveBeenCalledWith(file, "first line\nsecond");
   });
 
@@ -110,13 +142,13 @@ describe("executeVaultTool — append_note", () => {
     const file = new TFile("log.md");
     app.vault.getAbstractFileByPath = vi.fn().mockReturnValue(file);
     app.vault.read = vi.fn().mockResolvedValue("first line\n");
-    await executeVaultTool(app, "append_note", { path: "log.md", content: "second" });
+    await executeVaultTool(app, "append_note", { path: "log.md", content: "second" }, { allowWrites: true });
     expect(app.vault.modify).toHaveBeenCalledWith(file, "first line\nsecond");
   });
 
   it("creates the note if it doesn't exist", async () => {
     app.vault.getAbstractFileByPath = vi.fn().mockReturnValue(null);
-    await executeVaultTool(app, "append_note", { path: "new.md", content: "x" });
+    await executeVaultTool(app, "append_note", { path: "new.md", content: "x" }, { allowWrites: true });
     expect(app.vault.create).toHaveBeenCalledWith("new.md", "x");
   });
 });

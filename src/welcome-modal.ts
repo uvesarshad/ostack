@@ -47,8 +47,9 @@ export class WelcomeModal extends Modal {
       {
         heading: "Custom skills",
         items: [
-          "Drop a SKILL.md file into .gstack/skills/your-skill/ inside your vault.",
+          "Drop a SKILL.md file into _agent/your-skill/ inside your vault (or use the flat form _agent/your-skill.md).",
           "It registers as a live /command within 2 seconds — no restart needed.",
+          "Or import skills from a GitHub repo via Command Palette → 'ogstack: Import skill from GitHub'.",
         ],
       },
     ];

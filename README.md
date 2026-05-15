@@ -40,7 +40,7 @@ No copy-paste. No context switching. The AI already knows what you know.
 | `gs: Outline` | Builds a document outline from linked research |
 | `gs: Review` | Editorial critique and improvement suggestions for the active note |
 
-**Custom skills** — drop a `SKILL.md` file into `.gstack/skills/your-skill/` inside your vault and it registers as a live `gs:` command within 2 seconds. No restart, no code, no CLI required.
+**Custom skills** — drop a `SKILL.md` file into `_agent/your-skill/` inside your vault (or use the flat form `_agent/your-skill.md`) and it registers as a live `gs:` command within 2 seconds. No restart, no code, no CLI required. You can also import skills from any GitHub repo via Command Palette → **ogstack: Import skill from GitHub**.
 
 ---
 
@@ -155,29 +155,33 @@ Supported providers:
 | Gemini | gemini-2.0-flash | Yes — [aistudio.google.com](https://aistudio.google.com) |
 | Ollama | llama3.2 | No — runs locally |
 
-> **Security:** API keys are stored in plaintext in your vault's `data.json`. Do not sync this vault to untrusted services or share it publicly.
+> **Security notice:** API keys are stored in plaintext at `.obsidian/plugins/ogstack/data.json` inside your vault. Obsidian Sync excludes plugin data by default, but third-party sync (Git, Dropbox, iCloud, etc.) will carry the key — exclude this file if you share the vault.
+>
+> **Agent writes are disabled by default.** Skills with `mode: agent` get read tools (`read_note`, `list_notes`, `search_vault`, `get_active_note`) but their `write_note` and `append_note` calls return an error unless you opt in via Settings → ogstack → Agent safety → "Allow agent file writes". A prompt-injected agent should not silently modify your vault.
+>
+> **CLI provider hardening.** When using `claude-cli` / `codex-cli` / `gemini-cli`, the spawned subprocess runs with `shell: false`. Spaces and shell metacharacters in the CLI path or model name are rejected at the settings layer.
 
 ---
 
 ## Writing skills in your vault
 
-Skills live inside your vault — no CLI, no code editor required. The plugin watches the `.gstack/skills/` folder and registers every valid `SKILL.md` as a `gs:` command automatically.
+Skills live inside your vault — no CLI, no code editor required. The plugin watches the `_agent/` folder and registers every valid `SKILL.md` as a `gs:` command automatically.
 
 ### Folder structure
 
 ```
 YourVault/
-└── .gstack/
-    └── skills/
-        ├── competitor-analysis/
-        │   └── SKILL.md
-        ├── weekly-review/
-        │   └── SKILL.md
-        └── pitch-deck/
-            └── SKILL.md
+└── _agent/
+    ├── competitor-analysis/
+    │   └── SKILL.md
+    ├── weekly-review/
+    │   └── SKILL.md
+    ├── pitch-deck/
+    │   └── SKILL.md
+    └── quick-summary.md          ← flat form also supported
 ```
 
-Each subfolder becomes one command. The folder name is the command slug.
+Each subfolder becomes one command, named after its folder. You can also drop a single `_agent/your-skill.md` file (flat form) — the file's `name:` frontmatter field is the command slug.
 
 ### SKILL.md format
 
@@ -246,6 +250,33 @@ The `output:` field in `SKILL.md` overrides the global default in Settings → o
 
 If a custom skill has the same `name` as a built-in skill (`research`, `campaign`, `plan`, `outline`, `review`), the custom skill is skipped and a notice is shown. Rename the custom skill's `name` field to resolve it.
 
+### Agent skills (tool-using)
+
+In addition to the one-shot prompt-stuffing skills above, ogstack ships an experimental **agent** skill: `/vault-agent`. Agent skills run on Claude's tool-use API and can call vault tools in a loop until they reach an answer:
+
+- `list_notes(folder?)` — list markdown files in a folder
+- `read_note(path)` — full contents of a single note
+- `search_vault(query)` — case-insensitive substring search across notes
+- `get_active_note()` — path + contents of the currently open note
+- `append_note(path, content)` — append (gated by **Agent safety** setting)
+- `write_note(path, content)` — create/overwrite (gated by **Agent safety** setting)
+
+Define an agent skill in your own `_agent/<name>/SKILL.md` by adding `agent: true` and (optionally) an `allowed_tools` allow-list:
+
+```markdown
+---
+name: brief-from-tag
+description: Read all notes tagged with the given tag and summarise
+agent: true
+allowed_tools: [list_notes, read_note, search_vault]
+---
+
+You are a research assistant. Use the tools to find every note that mentions
+the tag the user gives, read them, and synthesise a one-page brief…
+```
+
+Agent skills require the Claude API provider (or claude-cli / codex-cli which run their own tools natively). Other API providers will refuse to run the skill with a clear error.
+
 ---
 
 ## Context assembly
@@ -267,13 +298,15 @@ The active note is always included in full regardless of budget.
 | Setting | Default | Description |
 |---|---|---|
 | Provider | claude | AI service |
-| Model | (provider default) | Leave blank to use the provider default |
+| Model | (provider default) | Leave blank to use the provider default. Letters, digits and `._:-/` only. |
+| CLI binary path | (auto from PATH) | Only shown for CLI providers. Spaces and shell metacharacters rejected. |
 | Ollama host | http://localhost:11434 | Only shown when Ollama is selected |
 | Token budget | 6000 | Tokens of linked notes to include (1000–16000) |
 | Context Scout | on | Semantic re-ranking before main model runs |
 | Scout model | gemini-2.0-flash-lite | Model used for relevance scoring |
 | Context decay | 14 days | Notes older than this are down-scored |
 | Default output | inline | `inline` (at cursor) or `new-note` (split leaf) |
+| Allow agent file writes | off | When off, agent skills can't run `write_note` / `append_note`. |
 
 ---
 
@@ -282,7 +315,7 @@ The active note is always included in full regardless of budget.
 ```bash
 npm install
 npm run dev        # watch mode — rebuilds on save
-npm test           # 51 unit tests
+npm test           # 123 unit tests
 npm run build      # production bundle → main.js
 ```
 

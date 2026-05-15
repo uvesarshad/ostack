@@ -1,6 +1,9 @@
 import type GStackPlugin from "./main";
 
 export interface ToolCall {
+  // Anthropic tool_use_id (e.g. "toolu_01ABC…"). Optional for back-compat with
+  // sessions persisted before id-tracking landed.
+  id?: string;
   name: string;
   input: Record<string, unknown>;
   output: string;

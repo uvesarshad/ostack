@@ -90,17 +90,30 @@ export function resolveTools(allowed: string[] | null): ToolDefinition[] {
 
 // ── Executors ────────────────────────────────────────────────────────
 
+export interface ExecuteVaultToolOptions {
+  // When false, write_note and append_note refuse to run and return an error
+  // the agent surfaces back to the user. See settings.allowAgentWrites.
+  allowWrites?: boolean;
+}
+
+const WRITE_DISABLED_MSG =
+  "ERROR: agent file writes are disabled. Enable Settings → ogstack → Agent safety → \"Allow agent file writes\" to grant write access.";
+
 export async function executeVaultTool(
   app: App,
   name: string,
-  input: Record<string, unknown>
+  input: Record<string, unknown>,
+  options: ExecuteVaultToolOptions = {}
 ): Promise<string> {
+  const allowWrites = options.allowWrites ?? false;
   switch (name) {
     case "read_note":
       return await readNote(app, String(input.path ?? ""));
     case "write_note":
+      if (!allowWrites) return WRITE_DISABLED_MSG;
       return await writeNote(app, String(input.path ?? ""), String(input.content ?? ""));
     case "append_note":
+      if (!allowWrites) return WRITE_DISABLED_MSG;
       return await appendNote(app, String(input.path ?? ""), String(input.content ?? ""));
     case "list_notes":
       return await listNotes(app, String(input.folder ?? ""));

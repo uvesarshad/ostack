@@ -162,6 +162,70 @@ describe("runClaudeAgent — basic flow", () => {
     expect((events[0] as { message: string }).message).toContain("unauthorized");
   });
 
+  it("refuses write_note when allowWrites is omitted (default off)", async () => {
+    const spy = vi.spyOn(ClaudeProvider.prototype, "streamWithTools");
+    spy.mockImplementationOnce(() =>
+      scripted([
+        { type: "tool_use", id: "tu_w", name: "write_note", input: { path: "out.md", content: "hi" } },
+        { type: "stop", stopReason: "tool_use" },
+      ])
+    );
+    spy.mockImplementationOnce(() =>
+      scripted([
+        { type: "text", text: "Writes are off — here's the proposed content instead." },
+        { type: "stop", stopReason: "end_turn" },
+      ])
+    );
+
+    const events = await drain(runClaudeAgent({
+      app,
+      apiKey: "sk",
+      model: "m",
+      systemPrompt: "sys",
+      userMessage: "go",
+      allowedTools: null,
+      // allowWrites intentionally omitted
+    }));
+
+    const result = events.find((e) => e.type === "tool_result") as { isError: boolean; output: string };
+    expect(result.isError).toBe(true);
+    expect(result.output).toMatch(/agent file writes are disabled/);
+    expect(app.vault.create).not.toHaveBeenCalled();
+    expect(app.vault.modify).not.toHaveBeenCalled();
+  });
+
+  it("permits write_note when allowWrites is true", async () => {
+    app.vault.getAbstractFileByPath = vi.fn().mockReturnValue(null);
+
+    const spy = vi.spyOn(ClaudeProvider.prototype, "streamWithTools");
+    spy.mockImplementationOnce(() =>
+      scripted([
+        { type: "tool_use", id: "tu_w", name: "write_note", input: { path: "out.md", content: "hi" } },
+        { type: "stop", stopReason: "tool_use" },
+      ])
+    );
+    spy.mockImplementationOnce(() =>
+      scripted([
+        { type: "text", text: "Wrote out.md." },
+        { type: "stop", stopReason: "end_turn" },
+      ])
+    );
+
+    const events = await drain(runClaudeAgent({
+      app,
+      apiKey: "sk",
+      model: "m",
+      systemPrompt: "sys",
+      userMessage: "go",
+      allowedTools: null,
+      allowWrites: true,
+    }));
+
+    const result = events.find((e) => e.type === "tool_result") as { isError: boolean; output: string };
+    expect(result.isError).toBe(false);
+    expect(app.vault.create).toHaveBeenCalledWith("out.md", "hi");
+  });
+
   it("stops early when the abort signal is triggered before the first round", async () => {
     const controller = new AbortController();
     controller.abort();

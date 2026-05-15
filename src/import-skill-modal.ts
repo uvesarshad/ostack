@@ -3,6 +3,18 @@ import { parseSKILL, Skill } from "./skill-loader";
 
 const AGENT_FOLDER = "_agent";
 
+// Skill names become path segments under _agent/. Restrict to a safe charset so a
+// malicious frontmatter value like "../../.obsidian/plugins/ogstack/data" can't
+// overwrite arbitrary files via vault.adapter.write.
+const SKILL_NAME_RX = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,39}$/;
+
+export function isSafeSkillName(name: string): boolean {
+  if (typeof name !== "string") return false;
+  if (!SKILL_NAME_RX.test(name)) return false;
+  if (name === "." || name === "..") return false;
+  return true;
+}
+
 // File basenames (case-insensitive) to skip when scanning a repo
 const SKIP_BASENAMES = new Set([
   "readme", "license", "licence", "contributing", "changelog",
@@ -148,7 +160,12 @@ export class ImportSkillModal extends Modal {
       setStatus(`Importing ${toImport.length}…`);
       await this.ensureAgentFolder();
       let count = 0;
+      let rejected = 0;
       for (const sk of toImport) {
+        if (!isSafeSkillName(sk.name)) {
+          rejected++;
+          continue;
+        }
         try {
           await this.app.vault.adapter.write(`${AGENT_FOLDER}/${sk.name}.md`, sk.rawContent);
           count++;
@@ -156,7 +173,8 @@ export class ImportSkillModal extends Modal {
           // skip on write failure
         }
       }
-      setStatus(`✓ Imported ${count} skill${count === 1 ? "" : "s"} into ${AGENT_FOLDER}/`);
+      const tail = rejected > 0 ? ` (${rejected} rejected — unsafe name)` : "";
+      setStatus(`✓ Imported ${count} skill${count === 1 ? "" : "s"} into ${AGENT_FOLDER}/${tail}`);
       this.onImported();
       setTimeout(() => this.close(), 1800);
     });
@@ -178,6 +196,12 @@ export class ImportSkillModal extends Modal {
     const content = res.text;
     const skill = parseSKILL(content, rawUrl);
     if (!skill) throw new Error("File has no valid skill frontmatter (name + description required)");
+
+    if (!isSafeSkillName(skill.name)) {
+      throw new Error(
+        `Skill name "${skill.name}" is unsafe — must match [a-zA-Z0-9_-], 1-40 chars, no slashes or dots.`
+      );
+    }
 
     await this.ensureAgentFolder();
     await this.app.vault.adapter.write(`${AGENT_FOLDER}/${skill.name}.md`, content);
@@ -215,6 +239,7 @@ export class ImportSkillModal extends Modal {
 
         const skill: Skill | null = parseSKILL(res.text, filePath);
         if (!skill) continue;
+        if (!isSafeSkillName(skill.name)) continue;
 
         discovered.push({
           path: filePath,

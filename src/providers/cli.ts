@@ -10,6 +10,26 @@ const BINARY_NAMES: Record<CliKind, string> = {
   "gemini-cli": "gemini",
 };
 
+// Validators — prevent command injection by rejecting shell-meaningful characters
+// before we hand `binary` and `args` to child_process.spawn. We intentionally do
+// NOT use `shell: true` (see spawn call below), but defense-in-depth: even with
+// shell:false, garbage values trip up the user with confusing errors.
+const SHELL_METACHAR_RX = /[\s&|;<>$`"'(){}[\]\\]/;
+const MODEL_NAME_RX = /^[a-zA-Z0-9._:\-/]{1,80}$/;
+
+export function isSafeCliPath(path: string): boolean {
+  if (typeof path !== "string") return false;
+  if (path.length === 0) return true; // empty = use PATH default, OK
+  if (path.length > 260) return false; // Windows MAX_PATH-ish guardrail
+  return !SHELL_METACHAR_RX.test(path);
+}
+
+export function isSafeModelName(model: string): boolean {
+  if (typeof model !== "string") return false;
+  if (model.length === 0) return true; // empty = use CLI's default
+  return MODEL_NAME_RX.test(model);
+}
+
 interface SpawnedProc {
   stdout: { on(event: "data", cb: (data: Buffer) => void): void; on(event: "end", cb: () => void): void };
   stderr: { on(event: "data", cb: (data: Buffer) => void): void };
@@ -26,6 +46,73 @@ function getChildProcess(): ChildProcessModule {
   const req = typeof require !== "undefined" ? require : (window as unknown as { require?: (m: string) => unknown }).require;
   if (!req) throw new Error("Node.js child_process is not available in this Obsidian build");
   return req("child_process") as ChildProcessModule;
+}
+
+interface FsModule {
+  existsSync(p: string): boolean;
+}
+interface PathModule {
+  join(...parts: string[]): string;
+  isAbsolute(p: string): boolean;
+}
+
+function nodeRequire(): ((m: string) => unknown) | null {
+  if (typeof require !== "undefined") return require;
+  const w = window as unknown as { require?: (m: string) => unknown };
+  return w.require ?? null;
+}
+
+// Resolve an executable by walking PATH × PATHEXT (Windows) ourselves. This
+// replaces `shell: true`, which would otherwise re-interpret arguments via
+// cmd.exe and open us up to command injection through cliPath / --model values.
+export function resolveBinary(binary: string): string {
+  const req = nodeRequire();
+  // If we can't access node modules, fall back to the raw name and let
+  // child_process.spawn fail with its own error.
+  if (!req) return binary;
+
+  let fs: FsModule;
+  let path: PathModule;
+  try {
+    fs = req("fs") as FsModule;
+    path = req("path") as PathModule;
+  } catch {
+    return binary;
+  }
+
+  // Absolute or path-segmented binaries: use as-is on POSIX; on Windows try
+  // PATHEXT extensions if the file doesn't already exist.
+  if (path.isAbsolute(binary) || binary.includes("/") || binary.includes("\\")) {
+    if (fs.existsSync(binary)) return binary;
+    if (typeof process !== "undefined" && process.platform === "win32") {
+      const exts = (process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";");
+      for (const ext of exts) {
+        const candidate = binary + ext;
+        if (fs.existsSync(candidate)) return candidate;
+      }
+    }
+    return binary;
+  }
+
+  // Bare name: walk PATH
+  if (typeof process === "undefined") return binary;
+  const pathSep = process.platform === "win32" ? ";" : ":";
+  const dirs = (process.env.PATH ?? "").split(pathSep).filter(Boolean);
+  const exts = process.platform === "win32"
+    ? (process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";")
+    : [""];
+
+  for (const dir of dirs) {
+    for (const ext of exts) {
+      const candidate = path.join(dir, binary + ext);
+      try {
+        if (fs.existsSync(candidate)) return candidate;
+      } catch {
+        // permission errors on individual dirs — keep walking
+      }
+    }
+  }
+  return binary; // not found — let spawn surface the ENOENT
 }
 
 // Each CLI accepts a single prompt. We flatten system + history + current message.
@@ -86,17 +173,31 @@ export class CliProvider implements LLMProvider {
       throw { status: 0, body: (err as Error).message };
     }
 
-    const binary = this.cliPath || BINARY_NAMES[this.kind];
+    if (!isSafeCliPath(this.cliPath)) {
+      throw {
+        status: 0,
+        body: `Unsafe CLI path "${this.cliPath}" — must not contain spaces or shell metacharacters. Configure in Settings → ogstack.`,
+      };
+    }
+    if (!isSafeModelName(this.model)) {
+      throw {
+        status: 0,
+        body: `Unsafe model name "${this.model}" — allowed: letters, digits, ._:-/`,
+      };
+    }
+
+    const binary = resolveBinary(this.cliPath || BINARY_NAMES[this.kind]);
     const args = buildArgs(this.kind, this.model);
     const prompt = buildPrompt(request);
 
     let proc: SpawnedProc;
     try {
-      // shell: true on Windows so PATH-resolved binaries (.cmd, .bat) work.
+      // shell:false (the default) keeps `binary` and `args` outside any shell
+      // interpreter — no command substitution, no redirection, no globbing.
+      // On Windows we resolve `.cmd`/`.bat`/`.exe` ourselves via resolveBinary().
       // cwd is the vault root so the CLI sees the user's notes, not the
       // Obsidian app install directory it would inherit from our process.
-      const isWindows = typeof process !== "undefined" && process.platform === "win32";
-      const spawnOpts: Record<string, unknown> = { shell: isWindows };
+      const spawnOpts: Record<string, unknown> = {};
       if (this.cwd) spawnOpts.cwd = this.cwd;
       proc = cp.spawn(binary, args, spawnOpts);
     } catch (err: unknown) {

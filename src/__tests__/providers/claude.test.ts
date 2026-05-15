@@ -85,6 +85,64 @@ describe("ClaudeProvider", () => {
     expect(tokens).toEqual(["token"]);
   });
 
+  it("streamWithTools aborts when caller signal fires", async () => {
+    // fetch hangs forever — abort is the only way out
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation((_url: string, init: RequestInit) =>
+        new Promise((_resolve, reject) => {
+          init.signal?.addEventListener("abort", () => {
+            const err = new Error("aborted");
+            err.name = "AbortError";
+            reject(err);
+          });
+        })
+      )
+    );
+
+    const provider = new ClaudeProvider("key", "model");
+    const controller = new AbortController();
+    const gen = provider.streamWithTools("sys", [{ role: "user", content: "hi" }], [], controller.signal);
+    const consume = (async () => {
+      for await (const _ of gen) { /* drain */ }
+    })();
+
+    controller.abort();
+    await expect(consume).rejects.toMatchObject({ name: "AbortError" });
+  });
+
+  it("streamWithTools throws 'timeout' when the internal 120s budget elapses without a caller abort", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockImplementation((_url: string, init: RequestInit) =>
+          new Promise((_resolve, reject) => {
+            init.signal?.addEventListener("abort", () => {
+              const err = new Error("aborted");
+              err.name = "AbortError";
+              reject(err);
+            });
+          })
+        )
+      );
+
+      const provider = new ClaudeProvider("key", "model");
+      const gen = provider.streamWithTools("sys", [{ role: "user", content: "hi" }], []);
+      const consume = (async () => {
+        for await (const _ of gen) { /* drain */ }
+      })();
+
+      // Attach the rejection assertion before advancing the timer so the
+      // rejection isn't briefly orphaned (would log PromiseRejectionHandled).
+      const assertion = expect(consume).rejects.toThrow("timeout");
+      await vi.advanceTimersByTimeAsync(120_001);
+      await assertion;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("skips non-content SSE events", async () => {
     vi.stubGlobal(
       "fetch",
