@@ -1,83 +1,34 @@
-# Environment and Configuration
+# Environment Configuration
 
-> **Scope:** Lists every setting and dev-environment variable. **Rendering context:** N/A **Last updated:** 2026-05-15
+> Scope: Environment variables, setting configurations, and secure credential storage.
+> Rendering context: N/A
+> Project tier: 3
+> Last updated: 2026-05-17
 
 ## Overview
+ogstack has two distinct environment configurations: a build-time system configuration using environment variables for file mirroring, and a runtime user configuration managed through Obsidian settings and persistent storage.
 
-Configuration in ogstack is handled through the Obsidian settings UI and persisted to `.obsidian/plugins/ogstack/data.json`. There is no `.env` at runtime; the only `.env` is a dev convenience that points the build at a vault for hot-sync.
+## Build-time Environment Variables
+The build system relies on a local .env configuration file placed in the repository root. It contains:
+- VAULT_PATH: The absolute system path to a target Obsidian vault directory (the folder containing the .obsidian directory). The build script, defined in esbuild.config.mjs, reads this path to copy compiled bundle files (main.js, manifest.json, and styles.css) directly to the target vault's plugin directory on every compilation turn.
 
-## Runtime Configuration (GStackSettings)
+AGENT NOTE: If VAULT_PATH is not configured or is invalid, esbuild will output files to the local dist directory instead of mirroring them into Obsidian.
 
-### Provider
-| Field | Type | Default | Notes |
-|---|---|---|---|
-| `provider` | `"claude" \| "openai" \| "gemini" \| "grok" \| "ollama" \| "claude-cli" \| "codex-cli" \| "gemini-cli"` | `"claude"` | Active LLM backend. |
-| `apiKey` | `string` | `""` | For API providers. Plaintext; see disclaimer. |
-| `model` | `string` | `""` (provider default) | Allowed chars: `[a-zA-Z0-9._:\-/]{1,80}`. |
-| `ollamaHost` | `string` | `"http://localhost:11434"` | Only for Ollama. |
-| `cliPath` | `string` | `""` (auto from PATH) | Only for CLI providers. Rejects shell metacharacters. |
+## Runtime Settings Storage
+All user-facing settings are stored in Obsidian's standard data.json configuration file. This file resides inside the plugin directory at the path: .obsidian/plugins/ogstack/data.json.
+- Credentials: API keys for Claude, OpenAI, Gemini, Grok, and Ollama hosts are saved in plaintext in this file.
+- Sync Behaviors: Obsidian Sync excludes plugin configurations from synchronization by default. However, third-party sync protocols (such as Git, iCloud, or Dropbox) will mirror this file across devices. Users sharing their vaults publicly must explicitly exclude data.json to prevent credential leaks.
 
-### Context
-| Field | Type | Default | Notes |
-|---|---|---|---|
-| `maxTokens` | `number` | `6000` | Token budget for linked notes (1000–16000). Active note always included in full. |
-| `scoutEnabled` | `boolean` | `true` | Run the semantic re-rank pass. |
-| `scoutModel` | `string` | `"gemini-2.0-flash-lite"` | Model used for scouting. |
-| `scoutProvider` | `ProviderId \| "inherit"` | `"inherit"` | Lets you run the main model on a CLI subscription and the scout on a cheap API key. |
-| `scoutApiKey` | `string` | `""` | Separate scout credentials when not inheriting. |
-| `scoutCliPath` | `string` | `""` | Separate scout CLI path. |
-| `scoutOllamaHost` | `string` | `"http://localhost:11434"` | Separate scout Ollama URL. |
-| `contextDecayDays` | `number` | `14` | Recency decay constant in days (1–90). |
-| `compactionThreshold` | `number` | `8000` | When estimated chat tokens exceed this, the bar offers Compact. |
+## Safety Setting Defaults
+- Allow Agent File Writes: Stored as allowAgentWrites, this boolean controls whether agent skills can perform write_note and append_note tool operations. By default, it is false (disabled) to block malicious prompt injections from modifying vault notes.
 
-### Output
-| Field | Type | Default | Notes |
-|---|---|---|---|
-| `outputMode` | `"inline" \| "new-note"` | `"inline"` | Skill `output:` frontmatter overrides this. |
+## Update Triggers
+- When a new environment variable is added to the esbuild pipeline.
+- When new API provider options or keys are added to settings.ts.
+- When the storage location or sync exclusion policy of keys changes.
 
-### Agent safety
-| Field | Type | Default | Notes |
-|---|---|---|---|
-| `allowAgentWrites` | `boolean` | `false` | When false, `write_note` / `append_note` agent tools return an error. |
-
-### First-run flag (not in the settings UI)
-- `hasSeenWelcome` — boolean toggled by the welcome modal.
-
-## Per-Skill Overrides (SKILL.md frontmatter)
-
-Skills can override several settings on a per-run basis:
-
-| Field | Default | Notes |
-|---|---|---|
-| `output` | global `outputMode` | `inline` or `new-note`. |
-| `max_depth` | `3` | BFS link-walk depth (max 5). |
-| `max_tokens` | global `maxTokens` | Token budget for this skill. |
-| `mode` | `oneshot` | `interactive` enables `<ASK>` clarifying-questions protocol. |
-| `agent` | `false` | Set true for tool-using skills (Claude API only). |
-| `allowed_tools` | all six | Allow-list for agent tools. |
-| `max_rounds` | `10` | Agent tool-call ceiling (hard cap 40). |
-| `auto_insert` | `false` | Legacy: auto-insert into the active note from the command palette. |
-
-## Development Environment
-
-### `.env` (gitignored)
-```bash
-VAULT_PATH=C:\Users\you\Documents\MyVault
-```
-
-The build script (`esbuild.config.mjs`) reads this and writes `main.js` / `manifest.json` / `styles.css` directly into `<VAULT_PATH>/.obsidian/plugins/ogstack/` on every rebuild. Without it, output lands in the repo root.
-
-### Scripts
-| Command | Purpose |
-|---|---|
-| `npm install` | Install dev deps. |
-| `npm run dev` | Watch + rebuild on save (syncs to vault if `.env` set). |
-| `npm run build` | Production bundle. |
-| `npm test` | Vitest run (161 tests). |
-| `npm run test:watch` | Vitest in watch mode. |
+AGENT UPDATE: update docs/infra/environment.md when settings keys or build environment variables change.
 
 ## Related Docs
-
-- docs/api/storage.md — How settings are persisted to `data.json`.
-- docs/modules/context-engine.md — How `maxTokens` and `scoutEnabled` affect traversal.
-- docs/auth/security.md — `allowAgentWrites` semantics and CLI validation.
+- docs/overview.md — General project tech stack.
+- docs/infra/testing.md — Local test execution environment.

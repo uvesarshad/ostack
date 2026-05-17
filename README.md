@@ -357,4 +357,20 @@ MIT
 
 ---
 
+## Documentation
+
+Full project documentation lives in /docs and is written for both
+humans and AI coding agents.
+
+Start here: [docs/overview.md](docs/overview.md)
+
+The overview contains the project's tech stack, architecture decisions,
+directory map of all doc files, and a glossary of domain terms.
+All other doc files are linked from there.
+
+AI agents (Claude Code, Gemini CLI, Codex, Cursor, etc.) should read
+docs/overview.md before making any changes to this codebase.
+
+---
+
 *Built by [Uves Arshad](https://x.com/uvesarshad) — follow on [X](https://x.com/uvesarshad) for updates.*

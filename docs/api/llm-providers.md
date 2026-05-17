@@ -1,94 +1,41 @@
-# LLM Providers
+# LLM API Providers
 
-> **Scope:** Details the integration with external AI services. **Rendering context:** Isomorphic **Last updated:** 2026-05-15
+> Scope: Streaming APIs, Server-Sent Events (SSE), tool-use pipelines, and secure shell-less CLI executors.
+> Rendering context: Client
+> Project tier: 3
+> Last updated: 2026-05-17
 
 ## Overview
+ogstack does not load heavyweight external SDKs. Instead, it interacts directly with artificial intelligence APIs using native browser fetch or Obsidian requestUrl. LLM integrations are divided into streaming web providers and local command-line interface (CLI) process adapters.
 
-ogstack supports five HTTP API providers and three subscription CLIs. Every provider implements the `LLMProvider` interface (`stream(request) → AsyncGenerator<string>`); the Claude API provider additionally implements `streamWithTools` for the agent loop. All HTTP providers share a retry helper that handles 429/503 transparently.
+## Core Provider interface
+All providers conform to the contract defined in provider-interface.ts.
+- LLMMessage: Type representing message nodes containing user or assistant roles and content strings.
+- LLMRequest: The payload container passing system prompts, message arrays, and model slugs.
+- LLMProvider: Interface enforcing a stream generator method yielding text tokens.
 
-## HTTP API Providers
+## Cloud API Providers
+- ClaudeProvider: Implements claude.ts. It handles both standard text streams and structured tool-use calls. It parses Server-Sent Events (SSE) from Anthropic, tracking content_block_start, content_block_delta, and content_block_stop. When the model invokes a tool, it accumulates partial json chunks from input_json_delta, parses the merged string, and executes the vault tool.
+- OpenAIProvider, GeminiProvider, GrokProvider, and OllamaProvider: Implement openai.ts, gemini.ts, grok.ts, and ollama.ts. They communicate via custom POST requests, buffering streaming chunks into user-facing text updates. Network calls are wrapped in fetchWithRetry to handle temporary rate limits (429 and 503 HTTP status responses) gracefully.
 
-| Provider | Endpoint | Default model | Auth |
-|---|---|---|---|
-| Claude | `api.anthropic.com/v1/messages` | `claude-sonnet-4-6` | `x-api-key` header |
-| OpenAI | `api.openai.com/v1/chat/completions` | `gpt-4o` | Bearer token |
-| Gemini | `generativelanguage.googleapis.com/v1beta/models/<model>:streamGenerateContent` | `gemini-2.0-flash` | `?key=` query string |
-| Grok / xAI | `api.x.ai/v1/chat/completions` | `grok-2-latest` | Bearer token |
-| Ollama | `${host}/api/chat` | `llama3.2` | none (local) |
+## Safe CLI Subprocess Executors
+- CliProvider: Implements cli.ts to interact with local binaries like claude, codex, or gemini CLI.
+- Subprocess Hardening: Spawns processes with shell set to false. This prevents command injection vulnerabilities since argument arrays are handed directly to the operating system kernel, completely bypassing shell interpreters.
+- Windows Extension probe: On Windows systems, since shell: false does not automatically resolve shell command files, resolveBinary walks the environmental PATH and PATHEXT system settings, locating command extensions like .cmd, .bat, or .exe manually before calling spawn.
+- Parameter validation: Before spawning the binary, inputs are checked against SHELL_METACHAR_RX and MODEL_NAME_RX, instantly blocking execution if unsafe characters or whitespaces are found outside quotes.
+- JSONL parsing: When calling codex-cli, it buffers stdout chunks and parses individual JSONL lines to extract the assistant agent's streamed response.
 
-### Streaming format
-- Claude / OpenAI / Gemini / Grok — SSE (`data: {...}\n\n` lines). Each provider parses its own delta shape.
-- Ollama — NDJSON (one JSON object per line, no `data:` prefix).
+## Stream Timeout Controls
+Cloud streams combine the user's abort event signal with a hard-coded 120s timeout controller. If a network chunk or SSE stream hangs for more than 120 seconds, the combined controller signals an abort to free runtime resources and avoid frozen states.
 
-### Timeout / cancellation
-- Every API provider wraps its fetch in a 120s `AbortController`. The bar's stop button signal is composed with this internal timeout.
-- Claude's `streamWithTools` (used by the agent loop) installs its own 120s timeout AND accepts a caller signal; either source cancels.
-- On timeout, `new Error("timeout")` is thrown; on user abort, an `AbortError` propagates so callers can distinguish.
+## Update Triggers
+- When a new API provider class is introduced under src/providers.
+- When the SSE stream parsing pattern is modified in claude.ts.
+- When argument compilers or security checks are altered in cli.ts.
 
-### Retry / backoff (`src/providers/retry.ts`)
-- Shared `fetchWithRetry(url, init, options)` helper.
-- Retries **once** on HTTP 429 or 503. Other failures propagate immediately.
-- Honors `Retry-After: <seconds>` header (capped at 10s); falls back to a 1s default backoff.
-- Composable with the caller's `AbortSignal`.
-
-## CLI Providers (`src/providers/cli.ts`)
-
-Three CLI subscriptions are supported. They're spawned as child processes — agents in their own right with native tool access — so ogstack's agent loop short-circuits and the CLI handles tools internally.
-
-| Kind | Binary | Streaming format |
-|---|---|---|
-| `claude-cli` | `claude` | plain text stdout |
-| `codex-cli` | `codex exec --json …` | JSONL events (we extract `item.delta` from `agent_message` items) |
-| `gemini-cli` | `gemini` | plain text stdout |
-
-### Hardening
-- **`shell: false`** — subprocess args never pass through cmd.exe / sh. PATHEXT resolution (`.cmd` / `.bat` / `.exe`) is performed in-process via `resolveBinary`.
-- Settings validation:
-  - `cliPath` rejects whitespace and shell metachars (`& | ; ` `` ` `` ` $ < > ( ) { } [ ] \ `).
-  - `model` restricted to `[a-zA-Z0-9._:\-/]{1,80}`.
-- `cwd` is set to the vault's root so the CLI sees the user's notes, not Obsidian's install dir.
-
-## Provider Interface
-
-```ts
-interface LLMRequest {
-  systemPrompt: string;
-  userMessage?: string;          // single-turn
-  messages?: LLMMessage[];       // multi-turn (overrides userMessage)
-  model?: string;
-}
-
-interface LLMProvider {
-  stream(request: LLMRequest): AsyncGenerator<string, void, unknown>;
-}
-```
-
-Construction is handled by two factories in `provider-interface.ts`:
-
-- `getProvider(settings, cwd?)` — returns the configured main provider.
-- `getScoutProvider(settings, cwd?)` — returns the scout provider. If `scoutProvider === "inherit"`, reuses the main provider's credentials with the scout model.
-
-## Manifest Allow-List
-
-`manifest.json` declares `requestUrls` for Obsidian's network sandbox:
-
-```json
-"requestUrls": [
-  "https://api.anthropic.com",
-  "https://api.openai.com",
-  "https://generativelanguage.googleapis.com",
-  "https://api.x.ai",
-  "https://api.github.com",
-  "https://raw.githubusercontent.com",
-  "http://localhost:11434"
-]
-```
-
-GitHub URLs cover the skill import command. Localhost covers Ollama.
+AGENT UPDATE: update docs/api/llm-providers.md when provider structures, CLI executors, or security checks change.
 
 ## Related Docs
-
-- docs/architecture/data-flow.md — How the SkillRunner / AgentLoop picks and drives a provider.
-- docs/architecture/execution-model.md — Cancellation semantics and the agent loop.
-- docs/auth/security.md — CLI provider hardening details.
-- docs/infra/environment.md — Settings shape and key handling.
+- docs/overview.md — Tech stack.
+- docs/api/external-services.md — Third-party service credentials.
+- docs/state/app-state.md — Storing message buffers.

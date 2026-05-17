@@ -1,85 +1,51 @@
 # Data Flow
 
-> **Scope:** Describes how data enters, transforms, and exits the system. **Rendering context:** Isomorphic **Last updated:** 2026-05-15
+> Scope: Full lifecycle of an AI execution turn from command invocation to final output.
+> Rendering context: Client
+> Project tier: 3
+> Last updated: 2026-05-17
 
 ## Overview
+ogstack features a highly structured data pipeline that coordinates local vault files, a two-stage LLM context assembly, remote Server-Sent Event (SSE) network streams, and local DOM output updates. The execution flows sequentially from a user request, through the context scoring engine, out to the LLM, and back into the editor.
 
-Data in ogstack flows from the local Obsidian vault through a series of filters and scoring mechanisms before being sent to an external LLM and finally streamed back into the user's document or chat surface. There are two parallel pipelines: the **oneshot skill** pipeline (system prompt + assembled vault context → streamed completion) and the **agent skill** pipeline (Anthropic tool-use loop with vault tools).
+## The Data Pipeline Stages
 
-## Pipeline 1 — Oneshot Skill Execution
+### Stage 1: User Request Invocation
+The pipeline begins when a user runs a gs: command from the Obsidian Command Palette or enters a message (e.g. /skill-name or general chat) into the floating BarChat or Sidebar textarea.
+- Symbol: BarChat or OgstackSidebarView captures the text buffer.
+- Mention Resolution: If the text contains at-mentions like @[[Note Name]], the mention-resolver.ts reads note files and appends their content blocks into the prompt stream.
 
-### 1. Trigger
-- User invokes a `gs:` command, types `/<skill>` in the bar, or sends a free-text message in the bar/sidebar.
-- AGENT OWNER: `src/main.ts` (command registration), `src/bar-chat.ts` (`handleSend`), `src/sidebar-view.ts` (`buildInputArea.send`).
+### Stage 2: Vault Context Assembly
+Before the main LLM executes, the skill-runner.ts requests a context payload from context-builder.ts.
+- BFS Traversal: The context engine queries app.metadataCache.resolvedLinks to perform a Breadth-First Search on the note graph, starting at the active file. It caps candidate discovery at 200 nodes.
+- Metadata scoring: Each node is assigned a numerical score computed from its link depth and modified by an exponential time decay.
+- Context Scout: The scout-context.ts passes the titles and first 200 characters of the top 50 candidates to a cheaper model (default: gemini-2.0-flash-lite).
+- Semantic Filtering: The scout returns a JSON array of relevance scores (0.0 to 1.0) and annotations. Candidates with scores greater than or equal to 0.5 are included in full. Candidates scoring under 0.5 are converted to single-line annotations, saving tokens.
+- Budgeting: Notes are accumulated in score-descending order until the token budget (default: 6000) is reached. Exceeding notes are discarded entirely to keep context complete.
 
-### 2. Context Discovery (BFS)
-- `buildVaultContext()` BFS-walks forward links from the active note up to `max_depth` (default 3, ceiling 5).
-- Uses `app.metadataCache.resolvedLinks` — no file reads at this stage.
-- AGENT OWNER: `src/context-builder.ts`
+### Stage 3: Payload Construction and Dispatch
+- XML Formatting: The builder formats note contents into clean XML structures, wrapping the active note in active-note tags and linked notes in context tags.
+- Framing Protection: Note contents are run through escapeForFraming, replacing framing tags like active-note or context with HTML entities, preventing prompt injection attacks.
+- Placeholder Replacement: The prompt loader replaces the double-curly VAULT_CONTEXT placeholder inside the skill prompt with the final XML string.
+- Provider Stream: The provider-interface.ts instantiates the appropriate LLMProvider (e.g. ClaudeProvider) and opens a connection, streaming SSE chunks in real time.
 
-### 3. Metadata Scoring
-- Each candidate scored as `(1/depth) × 0.6 + recencyDecay × 0.4` where `recencyDecay = exp(-daysSince / contextDecayDays)`.
-- Hard cap of 200 nodes on the candidate list (`BFS_NODE_CAP`).
+### Stage 4: Output Routing
+- Output Router: As SSE tokens arrive, the output-router.ts redirects content.
+- Inline Output: Inserts streamed text directly at the active cursor position inside the editor.
+- New Note Output: Creates a new markdown note in the vault and splits the leaf layout to display it alongside the active note.
+- Chat UI Output: appends message blocks into the ChatStore database, notifying the UI to run incremental DOM additions.
 
-### 4. Semantic Re-ranking (Context Scout, optional)
-- If `scoutEnabled`, top 50 candidates' title + first 200 chars are sent to the scout model (default `gemini-2.0-flash-lite`) which returns `{path, score, annotation}` per note.
-- 8s timeout race — on timeout/failure execution continues with metadata-only scoring.
-- Scout can run on a **different provider** than the main one via `scoutProvider` setting (e.g., main = `claude-cli`, scout = Gemini API).
-- AGENT OWNER: `src/context-scout.ts`
+## Error Propagation
+If the scout model fails or times out (8 seconds ceiling), the pipeline falls back seamlessly to metadata-only scoring without blocking the query. If the main model fails or drops mid-stream, retry.ts initiates a single retry, and if still unsuccessful, propagates a formatted error message to the UI.
 
-### 5. Final Assembly
-- High-scored notes (≥ 0.5) included in full; low-scored notes appear as their scout annotation only (`summary-only="true"`).
-- Notes are wrapped in `<context title="…" score="…" depth="…" annotation="…">…</context>` blocks. The active note gets `<active-note>`.
-- **Framing-tag defang:** Note content has literal `</context>`, `<active-note>`, `<mentioned-note>` opens/closes escaped to `&lt;…` to prevent crafted notes from breaking out of their block.
-- The skill's system prompt `{{VAULT_CONTEXT}}` placeholder is replaced with the assembled block.
-- AGENT OWNER: `src/context-builder.ts` (`formatVaultContext`, `escapeForFraming`).
+## Update Triggers
+- When the BFS traversal logic or scoring equation changes in context-builder.ts.
+- When the XML context formatting layout is changed.
+- When new output targets are added to output-router.ts.
 
-### 6. Mention Resolution
-- `[[Wiki Link]]` references in the user message are resolved to their note content and appended to the system prompt as `<mentioned-note>` blocks for that turn only.
-- Same defang applies. Shared between bar and sidebar via `src/mention-resolver.ts`.
-
-### 7. LLM Request
-- Provider chosen by `getProvider(settings, cwd)`. The CLI providers receive the vault's basepath as `cwd` so they see the user's notes rather than Obsidian's install dir.
-- All API providers go through `fetchWithRetry` which retries once on 429/503 with `Retry-After` honored (10s cap).
-- AGENT SEE: docs/api/llm-providers.md
-
-### 8. Output Routing
-- For oneshot skills run via `runSkill`: tokens stream into the editor (`inline`) or a newly-created note (`new-note`) via `src/output-router.ts`.
-- For chat surfaces: tokens append to an assistant bubble in the bar/sidebar; the final content is persisted via `ChatStore.addMessage`.
-
-## Pipeline 2 — Agent Skill Execution
-
-### 1. Trigger
-- User runs a skill with `agent: true` from the bar or command palette. Currently routes only through Claude API (CLI providers run their own native agent loops; other API providers reject with a clear message).
-
-### 2. Vault context assembled the same way as oneshot (steps 2–5 above) and inserted into the system prompt.
-
-### 3. Tool grant resolved from `skill.allowedTools` against `VAULT_TOOLS`. Defaults to all six tools if no allow-list.
-
-### 4. Streaming tool-use round
-- `runClaudeAgent` opens a streaming request with `tools` parameter populated.
-- Yields `text_delta` events live + buffers `tool_use` blocks.
-- On `stop_reason: tool_use`, executes each tool via `executeVaultTool(app, name, input, { allowWrites })`. Write tools refuse if the setting is off.
-- Tool results appended as `tool_result` content blocks for the next round.
-- Bounded by `max_rounds` (default 10, per-skill override, hard ceiling 40).
-
-### 5. Persistence
-- Agent assistant turn persisted with its `toolCalls[]` (`{id, name, input, output, isError}`) alongside the text content in the chat sidecar.
-- Session marked sticky with `agentSkillName`; subsequent user messages re-enter the agent loop with the new text as the kickoff message.
-
-## Serialization Boundaries
-
-- **Vault metadata → ScoredFile[]:** `src/context-builder.ts`
-- **ScoredFile[] → Scout prompt:** `src/context-scout.ts`
-- **VaultContext → XML string:** `src/context-builder.ts` (`formatVaultContext` + `escapeForFraming`)
-- **ChatMessage[] → LLMMessage[]:** `src/bar-chat.ts` (`buildLLMHistory`), `src/chat-runner.ts`
-- **ChatMessage[] → Markdown sidecar:** `src/chat-store.ts` (`serializeChat`)
-- **LLM SSE stream → token strings:** each `src/providers/*.ts`
-- **LLM token stream → Editor buffer:** `src/output-router.ts`
+AGENT UPDATE: update docs/architecture/data-flow.md when context builder, providers, or output routing steps are modified.
 
 ## Related Docs
-
-- docs/architecture/execution-model.md — Plugin lifecycle and concurrency model.
-- docs/modules/context-engine.md — BFS, scoring, and scout details.
-- docs/modules/skill-engine.md — Skill loading, parsing, and tool-use loop.
-- docs/api/llm-providers.md — Per-provider streaming and retry behavior.
+- docs/overview.md — Glossary and tech stack.
+- docs/modules/context-engine.md — Deep context logic.
+- docs/modules/skill-system.md — Custom skills and agent loops.

@@ -1,62 +1,40 @@
 # Layout System
 
-> **Scope:** How the plugin's UI surfaces fit into the Obsidian workspace. **Rendering context:** Client (Obsidian UI) **Last updated:** 2026-05-15
+> Scope: Workspace leaves, body-level absolute overlays, and workspace event systems.
+> Rendering context: Client
+> Project tier: 3
+> Last updated: 2026-05-17
 
 ## Overview
+ogstack registers multiple view spaces inside Obsidian's workspace framework. It divides user interactions between a long-lived sidebar leaf panel, a globally accessible floating command bar, modal dialogs, and a settings tab.
 
-ogstack adds four surfaces to the Obsidian workspace: a fixed-position floating bar above the status bar, a right-sidebar view, a status-bar indicator, and a handful of modals. It interacts with the editor exclusively via the Obsidian Editor API (`replaceRange`, `getCursor`, `lastLine`).
+## View containers
 
-## Workspace Integration
+### Sidebar Leaf View
+- View Type: SIDEBAR_VIEW_TYPE, resolved as ogstack-sidebar.
+- Class: OgstackSidebarView in sidebar-view.ts.
+- Location: Placed inside the workspace right sidebar leaf. It offers a persistent dashboard listing active note history, chat message bubbles, and action buttons. It detaches and attaches dynamically via active-leaf queries.
 
-### Floating BarChat
-- `.gstack-bar2-container` is `position: fixed; bottom: 48px; left: 50%; transform: translateX(-50%)`.
-- Width: `min(680px, 88vw)` — adapts to narrow windows.
-- Toggled in/out with the `.visible` class (opacity + transform transitions, disabled under `prefers-reduced-motion`).
-- The bar lives outside any Obsidian leaf — it does **not** participate in the workspace's resizing logic. Users can have it open over any view.
+### Floating Command Bar
+- Class: BarChat in bar-chat.ts.
+- Location: Appended directly to document.body. Renders as an absolutely positioned, centered card overlay. It remains hidden until summoned, serving as a rapid keyboard-driven interface.
 
-### Sidebar Leaf
-- Registered via `registerView(SIDEBAR_VIEW_TYPE, …)` in `src/main.ts`.
-- Toggled via the wand-2 ribbon icon. Opens in the right leaf by default.
-- Resizes with the surrounding leaf; the chat textarea and messages region use flex layout to fill available height.
+### Settings Panel Tab
+- Class: GStackSettingTab in settings.ts.
+- Location: Placed inside Obsidian's Settings dashboard, providing text fields, dropdown selectors, toggles, and verification triggers.
 
-### Status-Bar Indicator
-- `addStatusBarItem()` slot. Visible only when a stream is running and the bar isn't.
-- Three pulsing dots + a label, scoped by `.gstack-statusbar-streaming`.
+## Event Listeners and Bindings
+- Keyboard Hotkey listener: Registers Mod+Shift+Space command in main.ts. Since Windows IME often consumes this event, main.ts registers a secondary window-level DOM keydown listener to capture Ctrl+Shift+Space or Cmd+Shift+Space globally and toggle focus on the floating input textarea.
+- Workspace Note Switch tracker: Listens to Obsidian's active-leaf-change workspace event. When an editor is switched, the bar-chat and sidebar-view capture the active note, auto-attach to the most recent conversation session for that note, and trigger re-renders.
 
-### Editor Interaction
-- **Inline output (skill runner):** `editor.replaceRange(token, cursor)` per token chunk, advancing the cursor by length / newline count.
-- **Insert / Append from bar bubbles:** routes to the **session's** note (looked up via `notePath`), opening it in the active leaf if not already focused, then writing via the same Editor API.
-- **New-note output:** `app.vault.create(path, "")` followed by `workspace.getLeaf("split").openFile()`. The output streams into the new editor.
+## Update Triggers
+- When a new view leaf or overlay container is introduced.
+- When keydown hotkeys or keyboard listeners are changed.
+- When workspace event bindings are added or refactored.
 
-## Sizing Strategy
-
-| Surface | Width | Height |
-|---|---|---|
-| BarChat container | `min(680px, 88vw)` | content + 320px conversation max-height (scrolls) |
-| BarChat textarea | 100% of input row | autoresize, capped 120px |
-| ASK answer textarea | 100% | autoresize, capped 80px |
-| Sidebar | leaf-controlled | flex column, 100% |
-| Suggest popups | matches parent (input row / suggest container) | max-height 240px, scrolls |
-| Welcome modal | Obsidian default modal width | content height |
-| Import / Manage modals | Obsidian default | content height (scrollable list) |
-
-## Sidebar / Bar Title Tagging
-
-When a session is sticky-agent, the bar's title becomes `<note title> · agent: /<skill name>`. Implemented as two spans for individual styling: the agent tag uses `--color-accent`.
-
-## Modal Behaviors
-
-- All modals extend Obsidian's `Modal`. They auto-fit the workspace and dim the rest of the UI.
-- `confirm()` browser dialogs are used for destructive actions (skill deletion) — kept simple to avoid building a custom confirmation modal.
-
-## Data Fetching at Layout Level
-
-- **Settings** are loaded once during `onload()` and held in memory. Updates propagate to active components synchronously via `saveSettings` → `bar?.updateSettings`.
-- **Chat sessions** are mirror-loaded once during `onload()` (with one-time migration from legacy `data.json`); per-session reads/writes hit the markdown sidecar on every mutation.
-- **Vault metadata** is fetched on-demand per skill run via `app.metadataCache` (link graph) and `cachedRead` (note bodies).
+AGENT UPDATE: update docs/ui/layout-system.md when workspace leaves, layout classes, or window keyboard bindings change.
 
 ## Related Docs
-
-- docs/architecture/execution-model.md — Main-thread lifecycle.
-- docs/ui/component-library.md — Per-component details.
-- docs/ui/theming.md — CSS variables and theme integration.
+- docs/overview.md — General tech stack.
+- docs/ui/component-library.md — Modals and inputs.
+- docs/state/app-state.md — Workspace note state tracking.

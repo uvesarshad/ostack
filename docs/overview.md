@@ -1,100 +1,72 @@
-# Project Overview: ogstack
+# ogstack Overview
 
-> **Scope:** High-level entry point for the ogstack project. **Rendering context:** Client (Obsidian Plugin) **Last updated:** 2026-05-15
+> Scope: Central index, tech stack, and architectural baseline for the ogstack Obsidian plugin.
+> Rendering context: Client
+> Project tier: 3
+> Last updated: 2026-05-17
 
 ## Overview
+ogstack is a vault-aware skill system for Obsidian that allows users to run gstack-style AI skills directly within their notes. The plugin walks the note graph, scores and semantic-ranks linked notes, packages them into an XML context window, and streams the output directly into the active editor or a new note side-car. It runs entirely inside the client Obsidian application without external SDKs or server processes.
 
-ogstack is a vault-aware skill system for Obsidian that allows users to run AI-powered "skills" directly on their local notes. It leverages the Obsidian metadata graph to build context for LLMs, supporting multiple providers (Claude, OpenAI, Gemini, Grok, Ollama) plus subscription CLIs (Claude Code, Codex, Gemini CLI). The project is built with TypeScript and ships in two execution modes:
+## Project Tier and Environment Rationale
+ogstack is classified as a Tier 3 (Full-Stack / API-Driven) project. Although it has no typical web server backend, it drives complex local workflows, manages child process CLI executors, and interacts with multiple external API providers via client-side streaming and long-lived Server-Sent Events.
 
-1. **Oneshot skills** — system prompt + assembled vault context → streamed completion → inserted at cursor or routed to a new note.
-2. **Agent skills** — Claude tool-use loop with a curated set of vault tools (`read_note`, `list_notes`, `search_vault`, `get_active_note`, `append_note`, `write_note`). Writes are gated by a setting (default off).
-
-## Tech Stack
-
-- Core: TypeScript
-- Platform: Obsidian Plugin API (desktop-only — uses `child_process` for CLI providers)
-- Build: esbuild
-- Testing: Vitest (225 unit tests)
-- LLM Integration: Native fetch API with Server-Sent Events (SSE) for streaming; Anthropic streaming tool-use for agent skills
-- State Management: Per-note chat sidecar files under `_agent/chats/`; settings in `.obsidian/plugins/ogstack/data.json`
-
-## Directory Map
-
-### ARCHITECTURE
-- docs/architecture/execution-model.md — Describes the plugin lifecycle and command registration within Obsidian.
-- docs/architecture/data-flow.md — Maps the journey from vault traversal to LLM response streaming.
-- docs/architecture/folder-structure.md — Explains the purpose of each top-level directory and naming conventions.
-
-### MODULES / FEATURES
-- docs/modules/skill-engine.md — Covers the skill loader, built-in skills, and custom SKILL.md parsing (`_agent/` folder).
-- docs/modules/context-engine.md — Details BFS traversal, metadata scoring, and the Context Scout semantic re-ranker.
-- docs/modules/ui-system.md — Describes the sidebar, floating bar, welcome modal, and GitHub skill-import modal.
-
-### API & DATA
-- docs/api/llm-providers.md — Lists supported LLM providers and their specific implementation details, plus the CLI provider (`claude-cli` / `codex-cli` / `gemini-cli`) and its `shell: false` hardening.
-- docs/api/storage.md — Explains how settings, chat sessions, and metadata are persisted.
-
-### INFRASTRUCTURE & CONFIG
-- docs/infra/environment.md — Lists required settings and API key handling.
-- docs/infra/deployment.md — Describes the build process and plugin distribution format.
-- docs/infra/testing.md — Outlines the Vitest-based testing strategy and mock environment.
-
-### STATE & UI
-- docs/state/app-state.md — How runtime state is partitioned (settings, sessions, agent stickiness, streaming state).
-- docs/ui/component-library.md — Surfaces and reusable UI primitives (bar, sidebar, modals).
-- docs/ui/layout-system.md — Layout strategy across desktop sizes.
-- docs/ui/theming.md — CSS variable usage and `prefers-reduced-motion`.
-
-### SECURITY
-- docs/auth/security.md — Plugin-side security controls and references to SECURITY.md.
+Environment context:
+- Runtime: Obsidian Plugin API under Electron (Node.js and browser environments)
+- Language: TypeScript compiled via esbuild
+- Framework: Obsidian API SDK
+- Main rendering: Client-side rendering (CSR) via Obsidian DOM nodes
+- Main API endpoints: Direct connections to Anthropic, OpenAI, Google AI Studio, x.ai, Ollama localhost, and GitHub raw APIs
 
 ## Key Architectural Decisions
+- No External LLM SDKs: All network requests use Obsidian's native requestUrl or standard browser fetch APIs to keep the compiled bundle under 500 KB and prevent dependency bloat.
+- Two-Stage Context scoring: The plugin first runs a fast, memory-only BFS traversal and decay scoring, followed by an optional semantic re-ranking turn using a fast, inexpensive LLM (Context Scout).
+- Persistent Markdown Sidecars: Instead of a heavy JSON database, ChatStore persists individual chat sessions as markdown files in the _agent/chats/ directory inside the user's vault, enabling instant local search, sync, and light writes.
+- File-Write Safety Gate: Any skill attempting to write or append note files is stopped by a safety setting unless explicitly enabled in settings, protecting the vault from prompt-injection compromises.
 
-- **Vault-Aware BFS Traversal:** The system uses Obsidian's `resolvedLinks` to find context instead of a vector database, prioritizing link depth and recency. BFS caps at 200 nodes; ceiling depth is 5.
-- **Context Scout Optimization:** A secondary, cheaper model (default `gemini-2.0-flash-lite`) is used to prune the context before the primary model runs. Scout can run on a different provider than the main one — see settings `scoutProvider`.
-- **Stream-to-Editor:** Output is streamed directly into the Obsidian editor via per-note mutexes to prevent concurrent write collisions.
-- **No-Dependency Streaming:** Uses native `fetch` and `TextDecoder` to handle SSE, avoiding heavy external SDKs.
-- **Markdown sidecar chat store:** Each chat session is a markdown file under `_agent/chats/<note-slug>__<id>.md` — visible in the vault, searchable, and sync-friendly (per-file diffs instead of one giant `data.json`).
-- **Agent loop on Anthropic tool-use:** `src/agent-loop.ts` runs a bounded streaming tool-use loop (default 10 rounds, per-skill override via `max_rounds` frontmatter, hard ceiling 40). Tool calls and results are matched by `tool_use_id` (not name/order) so parallel calls compose safely. Tool outputs are capped (`read_note` 12k chars, `search_vault` 4k chars) with a `[truncated: …]` marker.
-- **Sticky agent sessions:** Once an agent skill runs in a chat, the session records `agentSkillName` and free-text follow-ups re-enter the agent loop with the same system prompt and tool grant. The title bar tags this state. `+ New chat` clears it.
-- **CLI provider with `shell: false`:** CLI providers (Claude Code, Codex, Gemini CLI) are spawned without a shell. PATH × PATHEXT resolution is performed in-process so `.cmd`/`.bat` shims still work on Windows without exposing the args to a shell interpreter.
+## Directory Map
+- docs/overview.md: Central architecture overview, glossary, and recent changes index.
+- docs/architecture/folder-structure.md: Top-level folder layout, naming conventions, and layout rules.
+- docs/architecture/rendering-strategy.md: Client-side rendering mechanics, node integrations, and child processes.
+- docs/architecture/data-flow.md: Step-by-step pipeline from prompt entry to output routing.
+- docs/ui/component-library.md: Shared UI modals, textareas, and interactive states.
+- docs/ui/layout-system.md: Obsidian leaves, workspaces, status bar integration, and DOM events.
+- docs/ui/theming.md: CSS stylesheet variables, Obsidian global themes, and animation controls.
+- docs/api/llm-providers.md: SSE response chunk parsing, CLI executors, and provider interfaces.
+- docs/api/storage.md: Markdown-sidecar serialization rules, YAML frontmatter, and parallel scan pipelines.
+- docs/api/external-services.md: Third-party LLM service integrations, keys, and GitHub downloader contracts.
+- docs/state/app-state.md: Active-leaf trackers, store changes, and text buffer caching.
+- docs/infra/environment.md: Vault path settings, keys storage, and security.
+- docs/infra/testing.md: Vitest configurations, mock objects, and verification scripts.
+- docs/modules/context-engine.md: BFS note graph traversal, scoring formulas, and semantic scout re-ranking.
+- docs/modules/ui-system.md: Input bar DOM managers, relative timers, and suggest popups.
+- docs/modules/skill-system.md: Custom skill watchers, loader registries, and tool loop controllers.
 
 ## Cross-Cutting Concerns
-
-- **Auth Strategy:** API keys are stored in plaintext at `.obsidian/plugins/ogstack/data.json`. Obsidian Sync excludes plugin data by default; third-party sync (Git, Dropbox, iCloud) carries the file unless explicitly excluded.
-- **Error Handling:** Uses Obsidian `Notice` for user-facing errors, in-chat error bubbles for streaming failures, and `console.warn` for non-fatal background issues.
-- **Styling:** Leverages Obsidian's internal CSS variables for native look-and-feel.
-- **Security model:**
-  - Imported skill names (from GitHub) are validated against `^[a-zA-Z0-9][a-zA-Z0-9_-]{0,39}$` before being used as path segments — prevents path traversal via malicious frontmatter.
-  - CLI path and model name from settings are validated against shell metacharacters before being passed to `child_process.spawn`.
-  - Agent file writes (`write_note`, `append_note`) are denied by default and return an error string the agent reports back to the user. Opt in via Settings → Agent safety.
+- Authentication: API keys are inputted by the user in the settings tab and stored in plaintext inside the vault's data.json file.
+- Error Handling: Stream abort errors, timeouts, and network failures are captured, formatted via provider-specific wrappers, and rendered as user-facing error notices or inline error elements.
+- Data Fetching: Parallel reads are performed using app.vault.cachedRead during BFS. Remote completions use fetch or requestUrl with a custom exponential backoff retry wrapper for rate limits.
+- Styling: Custom styles are contained in styles.css, leveraging Obsidian CSS variables so the interface naturally shifts between community themes and dark/light modes.
 
 ## Glossary
+- BFS Traversal: Breadth-First Search traversal that starts at the active note and discovers forward-linked files up to a configured max depth.
+- Context Scout: A fast, inexpensive helper LLM that reads note previews and returns relevance scores (0.0 to 1.0) and descriptive annotations.
+- Active Note: The note currently open in the active Obsidian editor, which acts as the BFS root.
+- Skill: A markdown file with YAML frontmatter containing metadata and a system prompt representing a specialised agent task.
+- Sidecar: A chat session markdown file created in the vault to store conversation history and tool outputs.
 
-- **Skill:** A markdown-based prompt template (`SKILL.md`) that defines a specific AI task. Frontmatter declares `name`, `description`, optional `agent`, `allowed_tools`, `output`, `max_depth`, `max_tokens`, `mode`.
-- **Agent skill:** A skill with `agent: true` that runs through the Anthropic tool-use loop with vault tools instead of a single streamed completion.
-- **Context Scout:** A small/cheap model used to semantically score notes before they are included in the final LLM prompt.
-- **Vault Context:** The assembled XML-tagged block containing the content of the active note + scored linked notes, substituted into the skill's `{{VAULT_CONTEXT}}` placeholder.
-- **Per-Note Mutex:** A locking mechanism that prevents multiple skills from writing to the same note simultaneously.
-- **Mention resolver:** Extracts `[[Wiki Link]]` references from a user message and inlines their content as `<mentioned-note>` blocks for that turn. Shared between the bar and sidebar chat surfaces (`src/mention-resolver.ts`).
+## Recent Changes
+- [2026-05-15] Shipped security hardening (Sprint 1) including skill path sanitization, shell: false CLI spawning, and agent write setting gates. Updated docs/overview.md and docs/api/storage.md.
+- [2026-05-15] Shipped agent correctness patches (Sprint 2 & 3) matching tool use IDs, adding 120s stream timeouts, persisting messages across multiple turns, and debouncing suggest scans. Updated docs/modules/skill-system.md.
+
+## Update Triggers
+- When a new documentation file is added or removed from the docs directory.
+- When there is a major architectural shift or new cross-cutting concern.
+- When new changes are shipped that must be documented in the Recent Changes log.
+
+AGENT UPDATE: update docs/overview.md when directories restructure or major features shift.
 
 ## Related Docs
-
-- docs/how-to-update-docs.md — Rules for maintaining this documentation.
-- SECURITY.md — Threat model, controls, and vulnerability reporting.
-- temp/AUDIT_REPORT.md — Most recent full audit (2026-05-15).
-- temp/AUDIT_TASKS.md — Sprint-organized follow-up tasks from the audit.
-
-## Recent changes (Sprint 4 + 5, 2026-05-15)
-
-- Vault context framing tags are now defanged inside note content so a crafted linked note can't break out of its `<context>` block.
-- Frontmatter parser replaced with a small dedicated module (`src/yaml-mini.ts`) — handles quoted scalars, embedded colons, and rejects ambiguous duplicate keys.
-- `@`-mention suggest popup is debounced (70ms) to keep large vaults responsive.
-- Provider streams retry once on 429/503 with `Retry-After` honored (capped at 10s).
-- ARIA labels on icon buttons; suggest popups now declare `role="listbox"` and `aria-selected`; `prefers-reduced-motion` disables transitions.
-- New command **ogstack: Manage installed skills** lists `_agent/*` skills with delete + open buttons.
-- New command-line **Test connection** button in Settings sends a one-token ping through the configured provider.
-- Sidebar timestamps tick once per minute.
-- Two new built-in skills: `/summarize` (paragraph distillation) and `/plan-interactive` (clarifying-questions plan).
-- Dead `persistent-bar.ts` (288 LOC) and its 200+ lines of legacy CSS removed.
-- `manifest.json` `requestUrls` now covers Grok (`api.x.ai`) and GitHub (for skill imports).
+- docs/architecture/folder-structure.md — Structural layout of files.
+- docs/architecture/rendering-strategy.md — Client execution model.
+- docs/architecture/data-flow.md — Data paths.
