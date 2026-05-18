@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   extractAsks,
   stripAsks,
+  parseAskBody,
   formatToolInput,
   formatToolInputForLog,
   truncate,
@@ -42,6 +43,90 @@ describe("extractAsks", () => {
     const text = "<ASK>A</ASK><ASK>B</ASK>";
     expect(extractAsks(text)).toEqual(["A", "B"]);
     expect(extractAsks(text)).toEqual(["A", "B"]); // would fail without lastIndex reset
+  });
+});
+
+describe("parseAskBody", () => {
+  it("treats plain text as a text-type ask", () => {
+    expect(parseAskBody("What is the goal?")).toEqual({
+      question: "What is the goal?",
+      type: "text",
+      options: [],
+      allowOther: false,
+    });
+  });
+
+  it("parses a single-select JSON spec", () => {
+    const body = JSON.stringify({
+      question: "Pick one",
+      type: "single",
+      options: ["A", "B", "C"],
+    });
+    expect(parseAskBody(body)).toEqual({
+      question: "Pick one",
+      type: "single",
+      options: ["A", "B", "C"],
+      allowOther: true,
+    });
+  });
+
+  it("parses a multi-select JSON spec", () => {
+    const body = JSON.stringify({
+      question: "Pick some",
+      type: "multi",
+      options: ["A", "B"],
+    });
+    expect(parseAskBody(body)).toEqual({
+      question: "Pick some",
+      type: "multi",
+      options: ["A", "B"],
+      allowOther: true,
+    });
+  });
+
+  it("honors allowOther: false", () => {
+    const body = JSON.stringify({
+      question: "Choose",
+      type: "single",
+      options: ["X", "Y"],
+      allowOther: false,
+    });
+    expect(parseAskBody(body).allowOther).toBe(false);
+  });
+
+  it("defaults to single when options exist but type is missing", () => {
+    const body = JSON.stringify({
+      question: "Pick",
+      options: ["A", "B"],
+    });
+    expect(parseAskBody(body).type).toBe("single");
+  });
+
+  it("accepts type aliases (radio/checkbox/choice/multiple)", () => {
+    expect(parseAskBody(JSON.stringify({ question: "q", type: "radio", options: ["a"] })).type).toBe("single");
+    expect(parseAskBody(JSON.stringify({ question: "q", type: "checkbox", options: ["a"] })).type).toBe("multi");
+    expect(parseAskBody(JSON.stringify({ question: "q", type: "choice", options: ["a"] })).type).toBe("single");
+    expect(parseAskBody(JSON.stringify({ question: "q", type: "multiple", options: ["a"] })).type).toBe("multi");
+  });
+
+  it("falls back to text when JSON is malformed", () => {
+    const body = `{"question": "broken`;
+    const spec = parseAskBody(body);
+    expect(spec.type).toBe("text");
+    expect(spec.question).toBe(body);
+  });
+
+  it("falls back to text when JSON lacks a question", () => {
+    expect(parseAskBody(`{"foo": "bar"}`).type).toBe("text");
+  });
+
+  it("trims whitespace inside text questions", () => {
+    expect(parseAskBody("   what?   ").question).toBe("what?");
+  });
+
+  it("filters empty option strings", () => {
+    const body = JSON.stringify({ question: "q", type: "single", options: ["A", "", "B"] });
+    expect(parseAskBody(body).options).toEqual(["A", "B"]);
   });
 });
 

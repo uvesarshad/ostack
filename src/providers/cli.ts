@@ -62,6 +62,21 @@ function nodeRequire(): ((m: string) => unknown) | null {
   return w.require ?? null;
 }
 
+// Helper for the pre-flight check: true iff `resolveBinary(name)` returned an
+// actually-existing file. We call existsSync ourselves because resolveBinary
+// returns the input unchanged when it can't find anything, which we can't
+// distinguish from "found exactly the bare name in cwd".
+export function binaryExistsOnPath(name: string): boolean {
+  const req = nodeRequire();
+  if (!req) return true; // can't verify — assume yes, let spawn try
+  let fs: FsModule;
+  try { fs = req("fs") as FsModule; } catch { return true; }
+  const resolved = resolveBinary(name);
+  // Bare name resolved unchanged → not found.
+  if (resolved === name && !name.includes("/") && !name.includes("\\")) return false;
+  try { return fs.existsSync(resolved); } catch { return false; }
+}
+
 // Resolve an executable by walking PATH × PATHEXT (Windows) ourselves. This
 // replaces `shell: true`, which would otherwise re-interpret arguments via
 // cmd.exe and open us up to command injection through cliPath / --model values.
@@ -186,7 +201,24 @@ export class CliProvider implements LLMProvider {
       };
     }
 
-    const binary = resolveBinary(this.cliPath || BINARY_NAMES[this.kind]);
+    const requestedName = this.cliPath || BINARY_NAMES[this.kind];
+    const binary = resolveBinary(requestedName);
+    // resolveBinary returns the input unchanged when it can't find the file.
+    // For bare names (no slash), that's our signal to fail fast with an
+    // actionable hint instead of letting spawn surface a cryptic ENOENT.
+    const isBareName = !requestedName.includes("/") && !requestedName.includes("\\");
+    const looksUnresolved = isBareName && binary === requestedName;
+    if (looksUnresolved && !binaryExistsOnPath(requestedName)) {
+      throw {
+        status: 0,
+        body:
+          `Could not find "${requestedName}" on PATH. ` +
+          `\n\n• Install: run \`npm install -g @openai/codex\` (or the CLI's installer) in your terminal.` +
+          `\n• Verify: \`${requestedName} --version\` should work in a fresh terminal.` +
+          `\n• Already installed? Quit and reopen Obsidian — GUI apps cache PATH at launch on Windows/macOS, so a newly-installed CLI isn't visible until you restart.` +
+          `\n• Custom location: set the absolute path in Settings → ogstack → CLI binary path.`,
+      };
+    }
     const args = buildArgs(this.kind, this.model);
     const prompt = buildPrompt(request);
 

@@ -19,13 +19,68 @@ export interface BarChatConfig {
   getSkills: () => Map<string, Skill>;
   chatStore: ChatStore;
   onStreamingChange?: (streaming: boolean, label: string) => void;
+  // When provided, BarChat mounts into this element instead of document.body
+  // and runs in "embedded" mode: always visible, no close button, no floating
+  // overlay styling. Used by the sidebar to host the same conversation surface.
+  host?: HTMLElement;
+  // In embedded mode, the host provides a back/close handler instead of the
+  // bar's own × button. E.g. sidebar uses this to return to the sessions list.
+  onClose?: () => void;
+  // If false, the embedded host owns active-leaf tracking (so it can flip
+  // sessions on its own). Defaults to true for the floating bar.
+  followActiveLeaf?: boolean;
 }
 
 // ── Constants ────────────────────────────────────────────────────────
 
-const ASK_PATTERN = /<ASK>([\s\S]*?)<\/ASK>/g;
+// Case-insensitive so weaker open-source models (which often lowercase tag
+// names) still get their questions rendered as interactive widgets.
+const ASK_PATTERN = /<ask>([\s\S]*?)<\/ask>/gi;
 const ESTIMATED_TOKENS_PER_CHAR = 0.25;
 const SCRATCH_NOTE_PATH = "__ogstack_scratch__";
+
+// The ASK protocol teaches the model two question shapes (plain text and
+// JSON-with-options) so user clarifying questions render as proper widgets.
+// Injected into every skill run and into free-chat — the prompt explicitly
+// tells the model not to fire ASKs when it has enough context, so the cost
+// of leaving it always-on is small.
+const ASK_PROTOCOL_PROMPT = `
+
+<!-- OGSTACK ASK PROTOCOL — MANDATORY -->
+This UI does NOT show plain prose questions as interactive controls. If you need an answer from the user, you MUST wrap the question in <ASK>...</ASK> tags. A question written as ordinary prose will be missed and the user will not see a reply box.
+
+# Format
+
+Two shapes are valid:
+
+A) Plain text — renders as a single textarea:
+   <ASK>What is the target launch date?</ASK>
+
+B) JSON with options — renders as radio buttons (single-select) or checkboxes (multi-select), plus an auto-added "Other" row that reveals a textbox:
+   <ASK>{"question": "What kind of business is this?", "type": "single", "options": ["SaaS", "Service-based", "Marketplace", "Content / media"]}</ASK>
+   <ASK>{"question": "Which channels are you using today?", "type": "multi", "options": ["Email", "Paid ads", "SEO", "Cold outbound", "Referrals"]}</ASK>
+
+# Wrong vs right
+
+WRONG (the user never sees a control — they'll just see prose):
+  How will you help ecommerce businesses overcome their pain points?
+
+RIGHT (renders as a textarea):
+  <ASK>How will you help ecommerce businesses overcome their pain points related to visibility and conversion rates?</ASK>
+
+RIGHT (renders as buttons):
+  <ASK>{"question": "What is the primary metric you want to improve?", "type": "single", "options": ["Revenue", "Conversion rate", "Traffic", "Retention"]}</ASK>
+
+# Rules
+
+- Every interrogative directed at the user must live inside <ASK>...</ASK>. No exceptions.
+- Prefer the JSON form whenever 2–6 distinct answers cover the realistic space. Users click faster than they type.
+- Use plain text only when the answer is genuinely freeform (numbers, dates, names, descriptions, long opinions).
+- Ask at most 3 ASKs per turn. Batch related questions; don't interleave them with explanations.
+- Don't restate the question outside the tag — the UI shows the inner text.
+- Set "allowOther": false only when "Other" makes no sense (e.g. yes/no). "Other" is on by default.
+- If you have enough context to proceed, don't ask anything — just answer.
+`;
 
 // ── BarChat: floating conversation surface ───────────────────────────
 
@@ -67,23 +122,24 @@ export class BarChat extends Component implements ProgressReporter {
   private config: BarChatConfig;
   private storeUnsubscribe: (() => void) | null = null;
   private activeLeafUnregister: (() => void) | null = null;
+  private embedded: boolean;
 
   constructor(config: BarChatConfig) {
     super();
     this.config = config;
+    this.embedded = !!config.host;
 
     this.container = document.createElement("div");
-    this.container.className = "gstack-bar2-container";
+    this.container.className = "gstack-bar2-container" + (this.embedded ? " embedded" : "");
 
     this.suggestPopup = document.createElement("div");
     this.suggestPopup.className = "gstack-bar2-popup";
     this.suggestPopup.style.display = "none";
     this.suggestPopup.setAttribute("role", "listbox");
     this.suggestPopup.setAttribute("aria-label", "Skill and note suggestions");
-    this.container.appendChild(this.suggestPopup);
 
     this.card = document.createElement("div");
-    this.card.className = "gstack-bar2-card";
+    this.card.className = "gstack-bar2-card" + (this.embedded ? " embedded" : "");
 
     this.toolbar = document.createElement("div");
     this.toolbar.className = "gstack-bar2-toolbar";
@@ -97,20 +153,41 @@ export class BarChat extends Component implements ProgressReporter {
     this.inputRow = document.createElement("div");
     this.inputRow.className = "gstack-bar2-input-row";
     this.buildInputRow();
+    // Anchor the suggest popup to the input row, not the container — that way
+    // its `bottom: calc(100% + 8px)` positions it above the input in both
+    // floating mode (where container.bottom = inputRow.bottom anyway) AND
+    // embedded mode (where container fills the entire sidebar height).
+    this.inputRow.appendChild(this.suggestPopup);
     this.card.appendChild(this.inputRow);
 
     this.container.appendChild(this.card);
-    document.body.appendChild(this.container);
+    (config.host ?? document.body).appendChild(this.container);
+
+    // Embedded surfaces are always "visible" — the host controls visibility.
+    if (this.embedded) this.container.classList.add("visible");
+
+    // Floating-bar-only: drag from toolbar, persisted size via ResizeObserver,
+    // and restore both on mount so the bar reappears where the user left it.
+    if (!this.embedded) {
+      this.installDragHandle();
+      this.installResizePersistence();
+      this.restoreGeometry();
+    }
 
     // Subscribe to store changes (external sidebar edits)
     this.storeUnsubscribe = this.config.chatStore.onChange(() => this.onStoreChange());
 
-    // Subscribe to active-leaf changes so the bar follows the note context
-    const ref = this.config.app.workspace.on("active-leaf-change", () => this.onActiveLeafChange());
-    this.activeLeafUnregister = () => {
-      // @ts-ignore — Obsidian's offref uses a hidden interface
-      this.config.app.workspace.offref(ref);
-    };
+    // Active-leaf follow is opt-out: the floating bar follows so it always
+    // matches what the user has open; the sidebar embed lets the host drive
+    // session switching from its own list UI.
+    const followLeaf = config.followActiveLeaf !== false;
+    if (followLeaf) {
+      const ref = this.config.app.workspace.on("active-leaf-change", () => this.onActiveLeafChange());
+      this.activeLeafUnregister = () => {
+        // @ts-ignore — Obsidian's offref uses a hidden interface
+        this.config.app.workspace.offref(ref);
+      };
+    }
 
     this.applyState();
   }
@@ -125,6 +202,8 @@ export class BarChat extends Component implements ProgressReporter {
   }
 
   hide(): void {
+    // Embedded host owns visibility — never self-hide.
+    if (this.embedded) return;
     this.container.classList.remove("visible");
     this.hideSuggestPopup();
   }
@@ -138,6 +217,23 @@ export class BarChat extends Component implements ProgressReporter {
     return this.container.classList.contains("visible");
   }
 
+  // Embedded host calls this to switch sessions from its sessions list.
+  async setSession(sessionId: string): Promise<void> {
+    const session = this.config.chatStore.getSession(sessionId);
+    if (!session) return;
+    this.currentSessionId = sessionId;
+    this.currentSkill = null;
+    this.currentSystemPrompt = "";
+    this.currentSystemPromptForNote = null;
+    this.setState("idle");
+    await this.renderConversation();
+    this.updateTitle();
+  }
+
+  getCurrentSessionId(): string | null {
+    return this.currentSessionId;
+  }
+
   updateSettings(settings: GStackSettings): void {
     this.config.settings = settings;
   }
@@ -147,7 +243,143 @@ export class BarChat extends Component implements ProgressReporter {
     this.storeUnsubscribe?.();
     this.activeLeafUnregister?.();
     if (this.suggestDebounceTimer) clearTimeout(this.suggestDebounceTimer);
+    this.resizeObserver?.disconnect();
+    this.dragCleanup?.();
     this.container.remove();
+  }
+
+  // ── Drag-to-reposition + resize persistence (floating mode only) ────
+
+  private resizeObserver: ResizeObserver | null = null;
+  private dragCleanup: (() => void) | null = null;
+  private static readonly GEOMETRY_STORAGE_KEY = "ogstack:bar:geometry:v1";
+
+  private installDragHandle(): void {
+    // Only the toolbar's empty space is a drag handle — clicks on actual
+    // toolbar buttons should not start a drag. We detect this by checking
+    // the event target's tag at pointerdown time.
+    let dragStart: { x: number; y: number; left: number; top: number } | null = null;
+
+    const onPointerDown = (e: PointerEvent) => {
+      // Ignore clicks on interactive children (buttons, inputs).
+      const target = e.target as HTMLElement | null;
+      if (!target) return;
+      if (target.closest("button, input, textarea, .gstack-bar2-toolbar-btn")) return;
+      // Only handle primary button.
+      if (e.button !== 0) return;
+
+      const rect = this.container.getBoundingClientRect();
+      dragStart = { x: e.clientX, y: e.clientY, left: rect.left, top: rect.top };
+
+      // Switch to absolute positioning anchored by top/left so the centering
+      // transform stops fighting us.
+      this.container.classList.add("dragging");
+      this.container.style.left = `${rect.left}px`;
+      this.container.style.top = `${rect.top}px`;
+      this.container.style.bottom = "auto";
+      this.container.style.transform = "none";
+
+      this.toolbar.setPointerCapture(e.pointerId);
+      e.preventDefault();
+    };
+
+    const onPointerMove = (e: PointerEvent) => {
+      if (!dragStart) return;
+      const dx = e.clientX - dragStart.x;
+      const dy = e.clientY - dragStart.y;
+      // Clamp inside the viewport (leave at least 60px visible on each side so
+      // the user can't lose the bar off-screen).
+      const cw = this.container.offsetWidth;
+      const ch = this.container.offsetHeight;
+      const minX = 60 - cw;
+      const minY = 0;
+      const maxX = window.innerWidth - 60;
+      const maxY = window.innerHeight - 40;
+      const left = Math.min(Math.max(dragStart.left + dx, minX), maxX);
+      const top = Math.min(Math.max(dragStart.top + dy, minY), maxY);
+      this.container.style.left = `${left}px`;
+      this.container.style.top = `${top}px`;
+    };
+
+    const onPointerUp = (e: PointerEvent) => {
+      if (!dragStart) return;
+      dragStart = null;
+      this.container.classList.remove("dragging");
+      try { this.toolbar.releasePointerCapture(e.pointerId); } catch { /* ignore */ }
+      this.persistGeometry();
+    };
+
+    this.toolbar.addEventListener("pointerdown", onPointerDown);
+    this.toolbar.addEventListener("pointermove", onPointerMove);
+    this.toolbar.addEventListener("pointerup", onPointerUp);
+    this.toolbar.addEventListener("pointercancel", onPointerUp);
+    this.toolbar.style.cursor = "grab";
+
+    this.dragCleanup = () => {
+      this.toolbar.removeEventListener("pointerdown", onPointerDown);
+      this.toolbar.removeEventListener("pointermove", onPointerMove);
+      this.toolbar.removeEventListener("pointerup", onPointerUp);
+      this.toolbar.removeEventListener("pointercancel", onPointerUp);
+    };
+  }
+
+  private installResizePersistence(): void {
+    // Card-level resize (CSS resize: both) drives the container size. Observe
+    // and persist with a debounce so we don't hammer localStorage during the
+    // drag.
+    let persistTimer: ReturnType<typeof setTimeout> | null = null;
+    this.resizeObserver = new ResizeObserver(() => {
+      if (persistTimer) clearTimeout(persistTimer);
+      persistTimer = setTimeout(() => this.persistGeometry(), 200);
+    });
+    this.resizeObserver.observe(this.card);
+  }
+
+  private persistGeometry(): void {
+    try {
+      const rect = this.container.getBoundingClientRect();
+      const cardRect = this.card.getBoundingClientRect();
+      const geom = {
+        left: rect.left,
+        top: rect.top,
+        width: cardRect.width,
+        height: cardRect.height,
+        // viewport — so we can re-center sensibly if the user resized the
+        // window since the last save and the old coordinates are off-screen.
+        vw: window.innerWidth,
+        vh: window.innerHeight,
+      };
+      localStorage.setItem(BarChat.GEOMETRY_STORAGE_KEY, JSON.stringify(geom));
+    } catch {
+      // localStorage can throw under sandbox / quota errors — non-fatal.
+    }
+  }
+
+  private restoreGeometry(): void {
+    try {
+      const raw = localStorage.getItem(BarChat.GEOMETRY_STORAGE_KEY);
+      if (!raw) return;
+      const geom = JSON.parse(raw) as {
+        left: number; top: number; width: number; height: number; vw?: number; vh?: number;
+      };
+      // Defensive: if either coordinate would push the bar fully off-screen
+      // (e.g. user switched displays), drop the saved position and let the
+      // default centered layout apply.
+      const offTop = geom.top < 0 || geom.top > window.innerHeight - 40;
+      const offLeft = geom.left + 60 > window.innerWidth || geom.left + geom.width < 60;
+      if (!offTop && !offLeft) {
+        this.container.style.left = `${geom.left}px`;
+        this.container.style.top = `${geom.top}px`;
+        this.container.style.bottom = "auto";
+        this.container.style.transform = "none";
+      }
+      if (geom.width > 200 && geom.height > 120) {
+        this.card.style.width = `${geom.width}px`;
+        this.card.style.height = `${geom.height}px`;
+      }
+    } catch {
+      // ignore parse / quota errors
+    }
   }
 
   // ── ProgressReporter (back-compat) ───────────────────────────────
@@ -211,9 +443,11 @@ export class BarChat extends Component implements ProgressReporter {
       const vaultStr = formatVaultContext(finalCtx);
       systemPrompt = skill.systemPrompt.replace("{{VAULT_CONTEXT}}", vaultStr);
 
-      if (skill.mode === "interactive") {
-        systemPrompt += `\n\n<!-- OGSTACK PROTOCOL --> If you need clarification before producing the final answer, write your reasoning briefly, then wrap each clarifying question in <ASK>question text</ASK> tags. The user will answer and you'll continue. Do not use ASK tags unless you need clarification.`;
-      }
+      // Every skill (interactive OR oneshot) gets the ASK protocol — community
+      // skills generally don't set mode in frontmatter, but they DO ask the
+      // user clarifying questions. Without this injection the model would ask
+      // as plain prose and the user wouldn't get widgets.
+      systemPrompt += ASK_PROTOCOL_PROMPT;
     } catch (err: unknown) {
       prepEl.textContent = `✕ ${(err as Error).message ?? "Failed to prepare"}`;
       return;
@@ -486,7 +720,34 @@ export class BarChat extends Component implements ProgressReporter {
 
   // ── Render ───────────────────────────────────────────────────────
 
+  // Render coalescing: chatStore.addMessage fires onChange synchronously, and
+  // the listener calls renderConversation() un-awaited. Meanwhile handleSend
+  // awaits its own renderConversation(). Without serialization, those two
+  // async renders interleave: each empty()s the container mid-flight, and
+  // MarkdownRenderer.render's await points let messages get appended twice.
+  // We allow at most one render in flight, mark subsequent requests dirty,
+  // and re-render once when the in-flight one finishes.
+  private renderInFlight = false;
+  private renderDirty = false;
+
   private async renderConversation(): Promise<void> {
+    if (this.renderInFlight) {
+      this.renderDirty = true;
+      return;
+    }
+    this.renderInFlight = true;
+    try {
+      await this.doRenderConversation();
+      while (this.renderDirty) {
+        this.renderDirty = false;
+        await this.doRenderConversation();
+      }
+    } finally {
+      this.renderInFlight = false;
+    }
+  }
+
+  private async doRenderConversation(): Promise<void> {
     const session = this.currentSession();
     this.conversationEl.empty();
     this.updateTitle();
@@ -579,28 +840,177 @@ export class BarChat extends Component implements ProgressReporter {
 
   private renderAskUI(parent: HTMLElement, asks: string[]): void {
     const askContainer = parent.createDiv({ cls: "gstack-bar2-ask" });
-    askContainer.createDiv({ cls: "gstack-bar2-ask-header", text: asks.length > 1 ? `${asks.length} questions` : "1 question" });
+    askContainer.createDiv({
+      cls: "gstack-bar2-ask-header",
+      text: asks.length > 1 ? `${asks.length} questions` : "1 question",
+    });
 
-    const inputs: HTMLTextAreaElement[] = [];
+    const specs: AskSpec[] = asks.map(parseAskBody);
+    const readers: Array<() => string> = [];
+    let firstFocusable: HTMLElement | null = null;
 
-    for (const question of asks) {
-      const row = askContainer.createDiv({ cls: "gstack-bar2-ask-row" });
-      row.createDiv({ cls: "gstack-bar2-ask-question", text: question });
-      const input = row.createEl("textarea", { cls: "gstack-bar2-ask-input" }) as HTMLTextAreaElement;
-      input.rows = 1;
-      input.placeholder = "Your answer…";
-      input.addEventListener("input", () => {
-        input.style.height = "auto";
-        input.style.height = Math.min(input.scrollHeight, 80) + "px";
+    // Forward declaration so option-change handlers can call submit on Enter.
+    const submit = async (): Promise<void> => doSubmit();
+
+    for (let i = 0; i < specs.length; i++) {
+      const spec = specs[i];
+      const row = askContainer.createDiv({ cls: `gstack-bar2-ask-row gstack-bar2-ask-${spec.type}` });
+
+      // Question text — render as markdown so the model can use **bold**,
+      // `code`, etc. We use MarkdownRenderer.render so inline formatting and
+      // links resolve the same way they do in the assistant message body.
+      const qEl = row.createDiv({ cls: "gstack-bar2-ask-question" });
+      void MarkdownRenderer.render(this.config.app, spec.question, qEl, "", this);
+
+      if (spec.type === "text") {
+        const ta = row.createEl("textarea", { cls: "gstack-bar2-ask-input" }) as HTMLTextAreaElement;
+        ta.rows = 1;
+        ta.placeholder = "Your answer… (Enter to send, Shift+Enter for newline)";
+        ta.addEventListener("input", () => {
+          ta.style.height = "auto";
+          ta.style.height = Math.min(ta.scrollHeight, 120) + "px";
+        });
+        ta.addEventListener("keydown", (e) => {
+          if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+            e.preventDefault();
+            void submit();
+          }
+        });
+        readers.push(() => ta.value.trim());
+        if (!firstFocusable) firstFocusable = ta;
+        continue;
+      }
+
+      // Option-based question. If the model already provided an "Other"-like
+      // option, don't tack on a second one — use the model's option as the
+      // text-revealing slot instead.
+      const groupName = `gstack-ask-${Date.now()}-${i}`;
+      const optionsList = row.createDiv({ cls: "gstack-bar2-ask-options" });
+
+      const aiOtherIdx = spec.options.findIndex((o) => isOtherLikeOption(o));
+      const aiHasOther = aiOtherIdx !== -1;
+      const showOtherRow = !aiHasOther && spec.allowOther;
+
+      const inputs: HTMLInputElement[] = [];
+      // Track which option (if any) is the AI-provided "Other"-like slot, so
+      // its label keeps its original wording AND its textbox reveals on pick.
+      let aiOtherInput: HTMLInputElement | null = null;
+
+      for (let oi = 0; oi < spec.options.length; oi++) {
+        const opt = spec.options[oi];
+        const id = `${groupName}-${oi}`;
+        const isAiOther = oi === aiOtherIdx;
+        const optionRow = optionsList.createEl("label", {
+          cls: "gstack-bar2-ask-option" + (isAiOther ? " gstack-bar2-ask-option-other" : ""),
+        });
+        optionRow.setAttribute("for", id);
+        const input = optionRow.createEl("input", {
+          attr: {
+            type: spec.type === "single" ? "radio" : "checkbox",
+            name: groupName, value: opt, id,
+          },
+        }) as HTMLInputElement;
+        optionRow.createEl("span", { text: opt, cls: "gstack-bar2-ask-option-label" });
+        inputs.push(input);
+        if (isAiOther) aiOtherInput = input;
+        if (!firstFocusable) firstFocusable = input;
+      }
+
+      // Either: AI provided an Other-like option (reveal textbox under it) OR
+      // we add our own Other row (legacy behavior).
+      let otherInput: HTMLInputElement | null = aiOtherInput;
+      let otherText: HTMLTextAreaElement | null = null;
+      let otherTextWrap: HTMLElement | null = null;
+
+      if (aiHasOther || showOtherRow) {
+        if (showOtherRow) {
+          const id = `${groupName}-other`;
+          const otherRow = optionsList.createEl("label", {
+            cls: "gstack-bar2-ask-option gstack-bar2-ask-option-other",
+          });
+          otherRow.setAttribute("for", id);
+          otherInput = otherRow.createEl("input", {
+            attr: { type: spec.type === "single" ? "radio" : "checkbox", name: groupName, value: "__other__", id },
+          }) as HTMLInputElement;
+          otherRow.createEl("span", { text: "Other", cls: "gstack-bar2-ask-option-label" });
+        }
+
+        otherTextWrap = optionsList.createDiv({ cls: "gstack-bar2-ask-other-input-wrap" });
+        otherText = otherTextWrap.createEl("textarea", {
+          cls: "gstack-bar2-ask-input gstack-bar2-ask-other-input",
+        }) as HTMLTextAreaElement;
+        otherText.rows = 1;
+        otherText.placeholder = "Type your answer… (Enter to send)";
+        otherTextWrap.style.display = "none";
+
+        const syncOther = () => {
+          const show = !!otherInput?.checked;
+          if (otherTextWrap) otherTextWrap.style.display = show ? "" : "none";
+          if (show) otherText?.focus();
+        };
+        otherInput?.addEventListener("change", syncOther);
+        // Radio group: any other input flipping on must hide the textbox.
+        if (spec.type === "single") {
+          for (const inp of inputs) {
+            if (inp !== otherInput) inp.addEventListener("change", syncOther);
+          }
+        }
+        otherText.addEventListener("input", () => {
+          otherText!.style.height = "auto";
+          otherText!.style.height = Math.min(otherText!.scrollHeight, 120) + "px";
+        });
+        otherText.addEventListener("keydown", (e) => {
+          if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+            e.preventDefault();
+            void submit();
+          }
+        });
+      }
+
+      // Enter on a focused radio/checkbox submits — matches native form intent
+      // ("Enter to send" is the universal chat convention).
+      for (const inp of inputs) {
+        inp.addEventListener("keydown", (e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            void submit();
+          }
+        });
+      }
+
+      readers.push(() => {
+        // If aiHasOther: the AI-provided option label is the "picked" value
+        // (we don't strip "(explain)" etc.); if the user also typed in the
+        // revealed textbox, append it as ": <text>".
+        const picked: string[] = [];
+        for (const inp of inputs) {
+          if (!inp.checked) continue;
+          if (inp === aiOtherInput) {
+            const txt = otherText?.value.trim() ?? "";
+            picked.push(txt ? `${inp.value}: ${txt}` : inp.value);
+          } else {
+            picked.push(inp.value);
+          }
+        }
+        // Custom "Other" row (only when aiHasOther was false).
+        if (!aiHasOther && showOtherRow && otherInput?.checked) {
+          const otherVal = otherText?.value.trim() ?? "";
+          picked.push(otherVal ? `Other: ${otherVal}` : "Other");
+        }
+        return picked.join("; ");
       });
-      inputs.push(input);
     }
 
     const submitBtn = askContainer.createEl("button", { cls: "gstack-bar2-ask-submit", text: "Send answers" });
-    submitBtn.addEventListener("click", async () => {
-      const answers = inputs.map((i, idx) => `**Q: ${asks[idx]}**\nA: ${i.value.trim() || "(no answer)"}`);
+    const doSubmit = async (): Promise<void> => {
+      if (submitBtn.disabled) return;
+      const answers = readers.map((read, idx) => {
+        const a = read();
+        return `**Q: ${specs[idx].question}**\nA: ${a || "(no answer)"}`;
+      });
       submitBtn.disabled = true;
-      inputs.forEach((i) => { i.disabled = true; });
+      askContainer.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>("input, textarea")
+        .forEach((el) => { el.disabled = true; });
 
       if (!this.currentSessionId) return;
       const answerText = answers.join("\n\n");
@@ -611,14 +1021,23 @@ export class BarChat extends Component implements ProgressReporter {
       await this.config.chatStore.addMessage(this.currentSessionId, "user", answerText);
       await this.renderConversation();
       await this.streamAssistantTurn(systemPromptForTurn);
-    });
+    };
+    submitBtn.addEventListener("click", () => void doSubmit());
 
-    setTimeout(() => inputs[0]?.focus(), 50);
+    setTimeout(() => firstFocusable?.focus(), 50);
   }
 
   // ── Toolbar / input ──────────────────────────────────────────────
 
   private buildToolbar(): void {
+    // Embedded mode: leading back button to return to sessions list.
+    if (this.embedded && this.config.onClose) {
+      const backBtn = this.toolbar.createEl("button", { cls: "gstack-bar2-toolbar-btn gstack-bar2-toolbar-back", text: "←" });
+      backBtn.title = "Back to chats";
+      backBtn.setAttribute("aria-label", "Back to chats");
+      backBtn.addEventListener("click", () => this.config.onClose?.());
+    }
+
     this.titleEl = this.toolbar.createDiv({ cls: "gstack-bar2-toolbar-title", text: "ogstack" });
 
     const newBtn = this.toolbar.createEl("button", { cls: "gstack-bar2-toolbar-btn", text: "+ New chat" });
@@ -631,15 +1050,24 @@ export class BarChat extends Component implements ProgressReporter {
     compactBtn.setAttribute("aria-label", "Compact conversation");
     compactBtn.addEventListener("click", () => this.compactConversation());
 
-    const openSidebarBtn = this.toolbar.createEl("button", { cls: "gstack-bar2-toolbar-btn", text: "Open in sidebar" });
-    openSidebarBtn.title = "Continue this chat in the right sidebar";
-    openSidebarBtn.setAttribute("aria-label", "Open chat in sidebar");
-    openSidebarBtn.addEventListener("click", () => this.openInSidebar());
+    const saveBtn = this.toolbar.createEl("button", { cls: "gstack-bar2-toolbar-btn", text: "Save to note" });
+    saveBtn.title = "Append the whole conversation as a markdown transcript to the bound note";
+    saveBtn.setAttribute("aria-label", "Save chat to note");
+    saveBtn.addEventListener("click", () => this.exportTranscript());
 
-    const closeBtn = this.toolbar.createEl("button", { cls: "gstack-bar2-toolbar-btn gstack-bar2-toolbar-close", text: "×" });
-    closeBtn.title = "Hide";
-    closeBtn.setAttribute("aria-label", "Close chat");
-    closeBtn.addEventListener("click", () => this.hide());
+    // Floating-bar-only: "Open in sidebar" and "×" close. In embedded mode
+    // the host owns these affordances.
+    if (!this.embedded) {
+      const openSidebarBtn = this.toolbar.createEl("button", { cls: "gstack-bar2-toolbar-btn", text: "Open in sidebar" });
+      openSidebarBtn.title = "Continue this chat in the right sidebar";
+      openSidebarBtn.setAttribute("aria-label", "Open chat in sidebar");
+      openSidebarBtn.addEventListener("click", () => this.openInSidebar());
+
+      const closeBtn = this.toolbar.createEl("button", { cls: "gstack-bar2-toolbar-btn gstack-bar2-toolbar-close", text: "×" });
+      closeBtn.title = "Hide";
+      closeBtn.setAttribute("aria-label", "Close chat");
+      closeBtn.addEventListener("click", () => this.hide());
+    }
   }
 
   private updateTitle(): void {
@@ -781,8 +1209,7 @@ export class BarChat extends Component implements ProgressReporter {
 
     // Resolve @[[Note]] mentions in the user message and append their content
     // to the system prompt for this turn so the model sees the actual content
-    // rather than just the literal `[[Name]]` string. Sidebar does the same
-    // via chat-runner — this keeps the bar at feature parity.
+    // rather than just the literal `[[Name]]` string.
     const mentionBlock = await resolveMentions(text, this.config.app);
     const systemPromptForTurn = mentionBlock
       ? `${this.currentSystemPrompt}\n\n${mentionBlock}`
@@ -796,13 +1223,13 @@ export class BarChat extends Component implements ProgressReporter {
   private async buildFreeChatSystemPrompt(): Promise<string> {
     const activeFile = this.config.app.workspace.getActiveFile();
     const base = "You are a concise AI assistant embedded in Obsidian. Help the user think through their notes. When listing or formatting, use markdown.";
-    if (!activeFile) return base + "\n\n(No active note open.)";
+    if (!activeFile) return base + ASK_PROTOCOL_PROMPT + "\n\n(No active note open.)";
     try {
       const ctx = await buildVaultContext(this.config.app, activeFile, this.config.settings, 2, Math.min(this.config.settings.maxTokens, 4000));
-      if (!ctx) return base;
-      return base + "\n\n" + formatVaultContext(ctx);
+      if (!ctx) return base + ASK_PROTOCOL_PROMPT;
+      return base + ASK_PROTOCOL_PROMPT + "\n\n" + formatVaultContext(ctx);
     } catch {
-      return base;
+      return base + ASK_PROTOCOL_PROMPT;
     }
   }
 
@@ -951,7 +1378,11 @@ export class BarChat extends Component implements ProgressReporter {
     const hasConvo = !!session && session.messages.length > 0;
     // Always show toolbar — New chat / title are useful even on empty session
     this.toolbar.style.display = "";
-    this.conversationEl.style.display = hasConvo || this.streamingAssistantEl ? "" : "none";
+    // Conversation pane stays visible even when empty so the input row stays
+    // pinned to the bottom of the card. Hiding it (previous behavior) made
+    // the input float just below the toolbar in a tall/resized card, which
+    // also pushed the suggest popup off the top of the card.
+    this.conversationEl.style.display = "";
     if (hasConvo) this.card.classList.add("has-conversation");
     else this.card.classList.remove("has-conversation");
   }
@@ -996,6 +1427,45 @@ export class BarChat extends Component implements ProgressReporter {
   // note happens to be focused right now. Users often click between notes while
   // an assistant reply is on screen — without this routing, "Insert at cursor"
   // would silently dump the content into the wrong file.
+  // Build a markdown transcript of the current session and append it to the
+  // bound note. Strips ASK tags (UI affordances, not user-readable content)
+  // and renders agent tool calls as a code-fenced sidebar so the saved record
+  // still shows what the agent did.
+  private async exportTranscript(): Promise<void> {
+    const session = this.currentSession();
+    if (!session || session.messages.length === 0) {
+      new Notice("ogstack: nothing to save — this chat is empty");
+      return;
+    }
+
+    const title = session.noteTitle || "Chat";
+    const stamp = new Date(session.updatedAt ?? Date.now()).toLocaleString();
+    const lines: string[] = [`## ogstack chat — ${title}`, `*${stamp}*`, ""];
+
+    for (const msg of session.messages) {
+      if (msg.role === "user") {
+        lines.push("**You:**", "", msg.content.trim(), "");
+        continue;
+      }
+      lines.push("**Assistant:**", "");
+      if (msg.toolCalls && msg.toolCalls.length > 0) {
+        lines.push("```text");
+        for (const t of msg.toolCalls) {
+          const status = t.isError ? "✕" : "✓";
+          lines.push(`${status} ${t.name}(${formatToolInputForLog(t.input)})`);
+        }
+        lines.push("```", "");
+      }
+      const visible = stripAsks(msg.content).trim();
+      if (visible) {
+        lines.push(visible, "");
+      }
+    }
+
+    const transcript = lines.join("\n").trimEnd() + "\n";
+    await this.insertIntoNote(transcript, "end");
+  }
+
   private async insertIntoNote(content: string, mode: "cursor" | "end"): Promise<void> {
     const session = this.currentSession();
     const targetPath = session?.notePath;
@@ -1134,6 +1604,66 @@ export class BarChat extends Component implements ProgressReporter {
 type SuggestEntry =
   | { kind: "skill"; skill: Skill }
   | { kind: "note"; file: TFile };
+
+// Structured shape of a single <ASK>...</ASK> after parsing its body. The
+// model can emit either plain text (legacy behavior — renders as a textarea)
+// or a JSON object with options. Anything malformed falls back to text so a
+// half-formed JSON blob never breaks the conversation.
+export interface AskSpec {
+  question: string;
+  type: "text" | "single" | "multi";
+  options: string[];
+  allowOther: boolean;
+}
+
+// "Other"-like option detection. The AI often provides its own escape-hatch
+// option ("Other", "Other (explain)", "Something else…") — when it does, we
+// re-use that as the textbox-revealing option rather than appending a second
+// "Other" row that confuses users.
+export function isOtherLikeOption(label: string): boolean {
+  const s = label.trim().toLowerCase();
+  if (!s) return false;
+  // Strip trailing parens like "(please explain)" before checking.
+  const head = s.replace(/\s*\([^)]*\)\s*$/, "").trim();
+  return (
+    head === "other" ||
+    head === "something else" ||
+    head === "none of the above" ||
+    head === "n/a" ||
+    head === "na"
+  );
+}
+
+export function parseAskBody(body: string): AskSpec {
+  const trimmed = body.trim();
+  // Cheap reject — avoid the parse exception when the body is obviously prose.
+  if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+    try {
+      const obj = JSON.parse(trimmed) as Record<string, unknown>;
+      const q = typeof obj.question === "string" ? obj.question.trim() : "";
+      if (q) {
+        const rawType = obj.type;
+        const type: AskSpec["type"] =
+          rawType === "multi" || rawType === "multiple" || rawType === "checkbox" ? "multi" :
+          rawType === "single" || rawType === "radio" || rawType === "choice" ? "single" :
+          "text";
+        const options = Array.isArray(obj.options)
+          ? (obj.options as unknown[]).map((o) => String(o)).filter((s) => s.length > 0)
+          : [];
+        // If the model gave options but no explicit type, assume single-select.
+        const finalType: AskSpec["type"] =
+          type === "text" && options.length > 0 ? "single" : type;
+        // allowOther defaults to true when there are options — keeps the
+        // conversation escape-hatch unless the model explicitly says no.
+        const allowOther = options.length > 0 && obj.allowOther !== false;
+        return { question: q, type: finalType, options, allowOther };
+      }
+    } catch {
+      // fall through to text
+    }
+  }
+  return { question: trimmed, type: "text", options: [], allowOther: false };
+}
 
 export function extractAsks(text: string): string[] {
   const out: string[] = [];

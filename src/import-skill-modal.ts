@@ -30,9 +30,20 @@ function githubUrlToRaw(url: string): string | null {
 }
 
 function repoOwnerFromUrl(url: string): string | null {
-  const m = url.match(/github\.com\/([^/]+\/[^/]+)/);
+  const m = url.match(/github\.com\/([^/]+\/[^/]+?)(?:\.git)?(?:[/?#]|$)/);
   if (!m) return null;
-  return m[1].replace(/\.git$/, "");
+  return m[1];
+}
+
+// Classify the pasted URL so the single "Import" button can route to the
+// right path. A repo root URL (no /blob/, optionally with .git) routes to
+// scanRepo; a single-file URL routes to importFile.
+export type GhUrlKind = "file" | "repo" | "unknown";
+export function classifyGithubUrl(url: string): GhUrlKind {
+  if (!url) return "unknown";
+  if (githubUrlToRaw(url)) return "file";
+  if (repoOwnerFromUrl(url)) return "repo";
+  return "unknown";
 }
 
 function isLikelySkillPath(path: string): boolean {
@@ -64,9 +75,9 @@ export class ImportSkillModal extends Modal {
     const { contentEl } = this;
     contentEl.addClass("gstack-import-modal");
 
-    contentEl.createEl("h2", { text: "Import skills from GitHub" });
+    contentEl.createEl("h2", { text: "Import skills" });
     contentEl.createEl("p", {
-      text: "Paste a GitHub file URL to import one skill, or a repo URL to scan for skills and import them selectively.",
+      text: "Paste a GitHub repo URL to scan and pick skills, a single-file URL (…/blob/…) to import one skill directly, or use the local picker to upload SKILL.md files from disk.",
       cls: "gstack-import-desc",
     });
 
@@ -79,48 +90,100 @@ export class ImportSkillModal extends Modal {
     const previewEl = contentEl.createEl("div", { cls: "gstack-import-preview" });
 
     const btnRow = contentEl.createEl("div", { cls: "gstack-import-btn-row" });
-    const btnFile = btnRow.createEl("button", { text: "Import this file", cls: "gstack-import-btn" });
-    const btnScan = btnRow.createEl("button", { text: "Scan repo for skills", cls: "gstack-import-btn mod-cta" });
+    const btnImport = btnRow.createEl("button", { text: "Import", cls: "gstack-import-btn mod-cta" });
+
+    // Local file picker — alternative to GitHub for users who already have
+    // SKILL.md files on disk (the repo got 404, manual download, vendored, …).
+    const btnPickFiles = btnRow.createEl("button", { text: "Import local files…", cls: "gstack-import-btn" });
+    btnPickFiles.title = "Pick one or more SKILL.md files from disk";
+    const fileInput = btnRow.createEl("input", {
+      attr: { type: "file", multiple: "true", accept: ".md,text/markdown" },
+      cls: "gstack-hidden",
+    }) as HTMLInputElement;
+    btnPickFiles.addEventListener("click", () => fileInput.click());
 
     const setStatus = (msg: string): void => { status.textContent = msg; };
 
-    btnFile.addEventListener("click", async () => {
-      const url = urlInput.value.trim();
-      if (!url) { setStatus("Paste a URL first."); return; }
-      btnFile.disabled = true;
-      setStatus("Fetching…");
+    const updateBtnLabel = (): void => {
+      const kind = classifyGithubUrl(urlInput.value.trim());
+      btnImport.textContent =
+        kind === "file" ? "Import this file" :
+        kind === "repo" ? "Scan repo for skills" :
+        "Import";
+    };
+    urlInput.addEventListener("input", updateBtnLabel);
+
+    fileInput.addEventListener("change", async () => {
+      const files = Array.from(fileInput.files ?? []);
+      if (files.length === 0) return;
+      btnImport.disabled = true;
+      btnPickFiles.disabled = true;
+      previewEl.empty();
+      setStatus(`Reading ${files.length} file${files.length === 1 ? "" : "s"}…`);
       try {
-        const name = await this.importFile(url);
-        setStatus(`✓ Imported "${name}" → ${AGENT_FOLDER}/${name}.md`);
-        this.onImported();
-        setTimeout(() => this.close(), 1800);
-      } catch (e: unknown) {
-        setStatus(`Error: ${(e as Error).message}`);
-        btnFile.disabled = false;
+        const imported = await this.importLocalFiles(files);
+        if (imported.ok === 0 && imported.errors.length > 0) {
+          setStatus(`No skills imported. ${imported.errors[0]}`);
+        } else {
+          const tail = imported.errors.length > 0 ? ` · ${imported.errors.length} skipped` : "";
+          setStatus(`✓ Imported ${imported.ok} skill${imported.ok === 1 ? "" : "s"} → ${AGENT_FOLDER}/${tail}`);
+          this.onImported();
+          if (imported.errors.length === 0) setTimeout(() => this.close(), 1800);
+        }
+        if (imported.errors.length > 0) {
+          // Render the rejected list so the user can see WHY a file didn't import.
+          const errList = previewEl.createDiv({ cls: "gstack-import-error-list" });
+          errList.createEl("div", { text: "Skipped files:", cls: "gstack-import-error-header" });
+          for (const e of imported.errors) errList.createEl("div", { text: `• ${e}`, cls: "gstack-import-error-item" });
+        }
+      } finally {
+        btnImport.disabled = false;
+        btnPickFiles.disabled = false;
+        fileInput.value = "";  // allow re-picking the same file after a fix
       }
     });
 
-    btnScan.addEventListener("click", async () => {
+    btnImport.addEventListener("click", async () => {
       const url = urlInput.value.trim();
-      if (!url) { setStatus("Paste a repo URL first."); return; }
-      btnScan.disabled = true;
-      btnFile.disabled = true;
+      if (!url) { setStatus("Paste a GitHub URL first."); return; }
+
+      const kind = classifyGithubUrl(url);
+      if (kind === "unknown") {
+        setStatus("Error: Not a recognized GitHub URL. Expected https://github.com/owner/repo or …/blob/branch/path.md");
+        return;
+      }
+
+      btnImport.disabled = true;
       previewEl.empty();
+
+      if (kind === "file") {
+        setStatus("Fetching…");
+        try {
+          const name = await this.importFile(url);
+          setStatus(`✓ Imported "${name}" → ${AGENT_FOLDER}/${name}.md`);
+          this.onImported();
+          setTimeout(() => this.close(), 1800);
+        } catch (e: unknown) {
+          setStatus(`Error: ${(e as Error).message}`);
+          btnImport.disabled = false;
+        }
+        return;
+      }
+
+      // repo
       setStatus("Fetching repo tree…");
       try {
         const skills = await this.scanRepo(url, setStatus);
         if (skills.length === 0) {
           setStatus("No valid skill files found (looked for .md files with name + description frontmatter).");
-          btnScan.disabled = false;
-          btnFile.disabled = false;
+          btnImport.disabled = false;
           return;
         }
         setStatus(`Found ${skills.length} skill${skills.length === 1 ? "" : "s"} — select which to import:`);
         this.renderPreview(previewEl, skills, setStatus);
       } catch (e: unknown) {
         setStatus(`Error: ${(e as Error).message}`);
-        btnScan.disabled = false;
-        btnFile.disabled = false;
+        btnImport.disabled = false;
       }
     });
   }
@@ -186,6 +249,34 @@ export class ImportSkillModal extends Modal {
     }
   }
 
+  // Read SKILL.md files the user picked from disk, parse each, and copy into
+  // _agent/. Returns counts so the caller can render a useful status line.
+  private async importLocalFiles(files: File[]): Promise<{ ok: number; errors: string[] }> {
+    await this.ensureAgentFolder();
+    let ok = 0;
+    const errors: string[] = [];
+
+    for (const file of files) {
+      try {
+        const text = await file.text();
+        const skill = parseSKILL(text, file.name);
+        if (!skill) {
+          errors.push(`${file.name} — missing required \`name\` / \`description\` frontmatter`);
+          continue;
+        }
+        if (!isSafeSkillName(skill.name)) {
+          errors.push(`${file.name} — unsafe skill name "${skill.name}"`);
+          continue;
+        }
+        await this.app.vault.adapter.write(`${AGENT_FOLDER}/${skill.name}.md`, text);
+        ok++;
+      } catch (e: unknown) {
+        errors.push(`${file.name} — ${(e as Error).message}`);
+      }
+    }
+    return { ok, errors };
+  }
+
   private async importFile(url: string): Promise<string> {
     const rawUrl = githubUrlToRaw(url);
     if (!rawUrl) throw new Error("Not a recognized GitHub URL");
@@ -212,15 +303,39 @@ export class ImportSkillModal extends Modal {
     const ownerRepo = repoOwnerFromUrl(repoUrl);
     if (!ownerRepo) throw new Error("Not a GitHub repo URL");
 
-    const repoRes = await requestUrl({ url: `https://api.github.com/repos/${ownerRepo}` });
-    if (repoRes.status === 404) throw new Error(`Repo "${ownerRepo}" not found or is private`);
-    if (repoRes.status !== 200) throw new Error(`GitHub API error ${repoRes.status}`);
+    // We `throw` here without retry — `requestUrl` doesn't actually throw on
+    // non-2xx (it resolves with .status); some Obsidian versions throw on
+    // network errors though, so wrap defensively.
+    let repoRes: Awaited<ReturnType<typeof requestUrl>>;
+    try {
+      repoRes = await requestUrl({ url: `https://api.github.com/repos/${ownerRepo}` });
+    } catch (e: unknown) {
+      throw new Error(`Network error reaching GitHub — check your connection. (${(e as Error).message})`);
+    }
+    if (repoRes.status === 404) {
+      throw new Error(
+        `Repo "${ownerRepo}" doesn't exist on GitHub (404). Double-check the owner and repo name in the URL — typos in either are the most common cause. If the repo is private, the import tool can't reach it.`
+      );
+    }
+    if (repoRes.status === 403) {
+      // GitHub unauthenticated rate limit is 60/hr per IP. Surface that clearly.
+      const reset = repoRes.headers?.["x-ratelimit-reset"];
+      const resetHint = reset
+        ? ` Resets at ${new Date(Number(reset) * 1000).toLocaleTimeString()}.`
+        : "";
+      throw new Error(`GitHub API rate-limit hit (403).${resetHint} Try again later, or import the SKILL.md files manually via "Import local files…".`);
+    }
+    if (repoRes.status !== 200) {
+      throw new Error(`GitHub API returned ${repoRes.status} for ${ownerRepo}. Try again, or use "Import local files…".`);
+    }
     const defaultBranch: string = repoRes.json.default_branch ?? "main";
 
     const treeRes = await requestUrl({
       url: `https://api.github.com/repos/${ownerRepo}/git/trees/${defaultBranch}?recursive=1`,
     });
-    if (treeRes.status !== 200) throw new Error(`Could not list repo files (${treeRes.status})`);
+    if (treeRes.status !== 200) {
+      throw new Error(`Could not list files in ${ownerRepo}@${defaultBranch} (status ${treeRes.status}). The branch may be empty or renamed.`);
+    }
     const entries: GitTreeEntry[] = treeRes.json.tree ?? [];
 
     const candidates = entries

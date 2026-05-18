@@ -205,9 +205,31 @@
 
 .gstack-session-meta { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; flex-shrink: 0; }
 .gstack-session-time { font-size: 10px; color: var(--text-faint); }
-.gstack-session-del { all: unset; cursor: pointer; color: var(--text-faint); font-size: 14px; line-height: 1; opacity: 0; transition: opacity 0.1s; }
-.gstack-session-item:hover .gstack-session-del { opacity: 0.5; }
-.gstack-session-del:hover { opacity: 1 !important; color: var(--text-error); }
+.gstack-session-del {
+  all: unset;
+  cursor: pointer;
+  color: var(--text-muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  opacity: 0;
+  transition: opacity 0.12s, background 0.12s, color 0.12s;
+}
+.gstack-session-del .svg-icon { width: 16px; height: 16px; }
+.gstack-session-item:hover .gstack-session-del { opacity: 0.7; }
+.gstack-session-del:hover {
+  opacity: 1 !important;
+  background: color-mix(in srgb, var(--text-error) 14%, transparent);
+  color: var(--text-error);
+}
+.gstack-session-del:focus-visible {
+  opacity: 1;
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: 1px;
+}
 
 /* Sessions empty state */
 .gstack-chat-empty {
@@ -484,6 +506,53 @@
   pointer-events: auto;
 }
 
+/* Embedded variant — BarChat hosted inside another container (e.g. the
+   sidebar). Drops the floating-overlay positioning so it fills its host. */
+.gstack-bar2-container.embedded {
+  position: relative;
+  inset: auto;
+  left: 0;
+  bottom: 0;
+  transform: none;
+  width: 100%;
+  height: 100%;
+  z-index: auto;
+  opacity: 1;
+  pointer-events: auto;
+  transition: none;
+  display: flex;
+}
+
+.gstack-bar2-card.embedded {
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  max-height: none;
+  flex: 1 1 auto;
+  width: 100%;
+  background: var(--background-primary);
+}
+
+/* Embedded conversation pane: drop the floating-mode `max-height: 50vh` cap so
+   the chat fills the entire sidebar instead of stopping halfway. */
+.gstack-bar2-card.embedded .gstack-bar2-conversation {
+  max-height: none;
+  flex: 1 1 auto;
+}
+
+/* Bottom breathing room so the input doesn't sit flush against Obsidian's
+   status bar at the bottom of the sidebar pane. */
+.gstack-bar2-card.embedded .gstack-bar2-input-row {
+  padding-bottom: 18px;
+}
+
+.gstack-sidebar-bar-host {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  position: relative;
+}
+
 .gstack-bar2-card {
   background: var(--background-primary);
   border: 1px solid var(--background-modifier-border);
@@ -492,8 +561,21 @@
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  max-height: 70vh;
+  max-height: 90vh;
+  /* User-resizable from the bottom-right corner. The container is wrapping us
+     so we resize the card directly; ResizeObserver in BarChat persists it. */
+  resize: both;
+  min-width: 360px;
+  min-height: 220px;
 }
+
+/* When the user is actively dragging the bar, suppress the entry transition
+   so motion is 1:1 with the cursor, and switch cursor to grabbing. */
+.gstack-bar2-container.dragging,
+.gstack-bar2-container.dragging .gstack-bar2-card {
+  transition: none !important;
+}
+.gstack-bar2-container.dragging .gstack-bar2-toolbar { cursor: grabbing; }
 
 .gstack-bar2-card.has-conversation {
   background: var(--background-primary);
@@ -555,7 +637,13 @@
   border-bottom: 1px solid var(--background-modifier-border);
   font-size: var(--font-ui-smaller);
   flex-wrap: wrap;
+  /* Block accidental text selection while dragging from the toolbar handle. */
+  user-select: none;
+  -webkit-user-select: none;
 }
+/* Floating-mode only: title + empty space is the drag handle. Embedded mode
+   has no drag, keep default cursor. */
+.gstack-bar2-card:not(.embedded) > .gstack-bar2-toolbar { cursor: grab; }
 
 .gstack-bar2-toolbar-title {
   font-size: 12px;
@@ -632,14 +720,13 @@
 
 /* Conversation pane */
 .gstack-bar2-conversation {
-  flex: 1;
+  flex: 1 1 auto;
   overflow-y: auto;
   padding: 14px 16px;
   display: flex;
   flex-direction: column;
   gap: 12px;
   min-height: 0;
-  max-height: 50vh;
 }
 
 .gstack-bar2-msg {
@@ -675,17 +762,34 @@
 
 .gstack-bar2-msg-content {
   color: var(--text-normal);
+  /* Critical: MarkdownRenderer outputs real block HTML, so we must NOT
+     preserve source whitespace here. The parent assistant bubble sets
+     white-space: pre-wrap for the streaming fallback path; we override it
+     once markdown is rendered so blank lines between blocks don't double up
+     with margin spacing. */
+  white-space: normal;
 }
 /* Tighten Obsidian's default block spacing so the bar's chat bubbles aren't
-   airy. MarkdownRenderer emits <p>, <ul>, <h*>, etc. with their normal margins. */
-.gstack-bar2-msg-content > :first-child { margin-top: 0; }
-.gstack-bar2-msg-content > :last-child { margin-bottom: 0; }
+   airy. MarkdownRenderer emits <p>, <ul>, <h*>, etc. — and also wraps each
+   top-level block in an `.el-*` div with its own margin. We zero both. */
+.gstack-bar2-msg-content > :first-child,
+.gstack-bar2-msg-content > [class^="el-"]:first-child > :first-child {
+  margin-top: 0;
+}
+.gstack-bar2-msg-content > :last-child,
+.gstack-bar2-msg-content > [class^="el-"]:last-child > :last-child {
+  margin-bottom: 0;
+}
+.gstack-bar2-msg-content [class^="el-"] {
+  margin: 0;
+}
 .gstack-bar2-msg-content p,
 .gstack-bar2-msg-content ul,
 .gstack-bar2-msg-content ol,
 .gstack-bar2-msg-content blockquote,
 .gstack-bar2-msg-content pre {
   margin: 0.35em 0;
+  line-height: 1.45;
 }
 .gstack-bar2-msg-content h1,
 .gstack-bar2-msg-content h2,
@@ -696,13 +800,20 @@
   margin: 0.6em 0 0.25em;
   line-height: 1.25;
 }
-.gstack-bar2-msg-content li { margin: 0.15em 0; }
+.gstack-bar2-msg-content li { margin: 0.1em 0; line-height: 1.45; }
 .gstack-bar2-msg-content li > p { margin: 0; }
+.gstack-bar2-msg-content li + li { margin-top: 0.1em; }
 .gstack-bar2-msg-content ul,
 .gstack-bar2-msg-content ol { padding-left: 1.4em; }
 .gstack-bar2-msg-content pre { padding: 6px 8px; }
 .gstack-bar2-msg-content code { font-size: 0.9em; }
 .gstack-bar2-msg-content hr { margin: 0.6em 0; }
+/* Obsidian also injects empty `<p><br></p>` between block-level elements in
+   some render paths — collapse them so they don't add a phantom line gap. */
+.gstack-bar2-msg-content p:empty,
+.gstack-bar2-msg-content p > br:only-child {
+  display: none;
+}
 
 .gstack-bar2-msg-status {
   align-self: center;
@@ -797,7 +908,17 @@
   font-size: 13px;
   color: var(--text-normal);
   margin-bottom: 6px;
+  line-height: 1.45;
 }
+/* MarkdownRenderer wraps each block in `.el-p` etc. — strip default margins
+   so question text reads tight regardless of how the model formatted it. */
+.gstack-bar2-ask-question > [class^="el-"] { margin: 0; }
+.gstack-bar2-ask-question p,
+.gstack-bar2-ask-question ul,
+.gstack-bar2-ask-question ol { margin: 0.15em 0; }
+.gstack-bar2-ask-question > :first-child { margin-top: 0; }
+.gstack-bar2-ask-question > :last-child { margin-bottom: 0; }
+.gstack-bar2-ask-question code { font-size: 0.92em; }
 
 .gstack-bar2-ask-input {
   width: 100%;
@@ -830,6 +951,51 @@
 .gstack-bar2-ask-submit:hover { opacity: 0.9; }
 .gstack-bar2-ask-submit:disabled { opacity: 0.4; cursor: default; }
 
+/* Option-based ASKs (single / multi). One row per option with a tight click
+   target, plus a revealable text input for the "Other" branch. */
+.gstack-bar2-ask-options {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.gstack-bar2-ask-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  background: var(--background-primary);
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text-normal);
+  transition: border-color 0.1s ease, background 0.1s ease;
+}
+.gstack-bar2-ask-option:hover {
+  border-color: color-mix(in srgb, var(--interactive-accent) 40%, var(--background-modifier-border));
+}
+.gstack-bar2-ask-option:has(input:checked) {
+  border-color: var(--interactive-accent);
+  background: color-mix(in srgb, var(--interactive-accent) 8%, var(--background-primary));
+}
+.gstack-bar2-ask-option input {
+  margin: 0;
+  accent-color: var(--interactive-accent);
+}
+.gstack-bar2-ask-option-label {
+  flex: 1;
+}
+.gstack-bar2-ask-option-other {
+  border-style: dashed;
+}
+.gstack-bar2-ask-other-input-wrap {
+  padding-left: 26px;
+  margin-top: 2px;
+}
+.gstack-bar2-ask-other-input {
+  width: 100%;
+}
+
 /* Input row */
 .gstack-bar2-input-row {
   display: flex;
@@ -837,6 +1003,9 @@
   gap: 8px;
   padding: 10px 12px;
   background: var(--background-primary);
+  /* Anchor the suggestions popup (`bottom: calc(100% + 8px)`) to the input
+     row so it positions above the input in both floating and embedded modes. */
+  position: relative;
 }
 .gstack-bar2-card.has-conversation .gstack-bar2-input-row {
   border-top: 1px solid var(--background-modifier-border);
@@ -1060,6 +1229,19 @@
 }
 
 .gstack-hidden { display: none; }
+
+/* Inline error list for the local-file importer — one row per rejected file
+   with the parser's reason, so the user can spot a missing `name:` field. */
+.gstack-import-error-list {
+  margin-top: 12px;
+  padding: 10px 12px;
+  background: color-mix(in srgb, var(--text-error) 8%, var(--background-primary));
+  border: 1px solid color-mix(in srgb, var(--text-error) 40%, var(--background-modifier-border));
+  border-radius: 8px;
+  font-size: var(--font-ui-smaller);
+}
+.gstack-import-error-header { font-weight: 600; color: var(--text-error); margin-bottom: 4px; }
+.gstack-import-error-item { color: var(--text-normal); line-height: 1.5; }
 
 /* ── prefers-reduced-motion: disable animations and transitions ── */
 

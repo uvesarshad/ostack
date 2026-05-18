@@ -1,20 +1,24 @@
-import { ItemView, MarkdownRenderer, TFile, WorkspaceLeaf } from "obsidian";
+import { ItemView, WorkspaceLeaf, setIcon } from "obsidian";
+import { BarChat } from "./bar-chat";
 import { ChatSession } from "./chat-store";
-import { runChatMessage } from "./chat-runner";
-import { runSkill } from "./skill-runner";
 import type GStackPlugin from "./main";
 
 export const SIDEBAR_VIEW_TYPE = "ogstack-sidebar";
 
 type Screen = { name: "sessions" } | { name: "chat"; sessionId: string };
 
+// The sidebar is a thin shell: it owns the sessions list (history) and, when
+// the user picks a session or starts a new one, mounts a BarChat instance into
+// its own container. That gives both surfaces the exact same conversation code
+// (streaming, agents, ASK, compaction, Insert/Append/Copy) — only the chrome
+// around it differs.
 export class OgstackSidebarView extends ItemView {
   private screen: Screen = { name: "sessions" };
-  private streamingContent = "";
   private storeUnsubscribe: (() => void) | null = null;
   // Tick once per minute to refresh "5m ago"-style timestamps. Without this,
   // a long-open sidebar shows stale relative times.
   private relativeTimeInterval: ReturnType<typeof setInterval> | null = null;
+  private embeddedBar: BarChat | null = null;
 
   constructor(leaf: WorkspaceLeaf, private plugin: GStackPlugin) {
     super(leaf);
@@ -26,13 +30,11 @@ export class OgstackSidebarView extends ItemView {
 
   async onOpen(): Promise<void> {
     this.storeUnsubscribe = this.plugin.chatStore.onChange(() => {
-      // Avoid re-rendering during in-flight chat input — only refresh when idle
-      if (this.streamingContent) return;
-      this.render();
+      // Only re-render the sessions list — the embedded BarChat manages its
+      // own re-render via the same store subscription.
+      if (this.screen.name === "sessions") this.render();
     });
 
-    // Refresh relative timestamps once per minute (sessions screen only).
-    // We rewrite the spans in place instead of re-rendering the whole tree.
     this.relativeTimeInterval = setInterval(() => {
       if (this.screen.name !== "sessions") return;
       const root = this.containerEl.children[1] as HTMLElement | undefined;
@@ -52,40 +54,21 @@ export class OgstackSidebarView extends ItemView {
 
   async render(): Promise<void> {
     const root = this.containerEl.children[1] as HTMLElement;
-
-    // Snapshot any in-progress textarea state so a cross-surface store change
-    // (e.g. the bar wrote a message while the sidebar was open with typed-but-
-    // unsent content) doesn't blow the user's input away on the rebuild.
-    const existingTextarea = root.querySelector("textarea.gstack-chat-textarea") as HTMLTextAreaElement | null;
-    const snapshot = existingTextarea
-      ? {
-          value: existingTextarea.value,
-          selStart: existingTextarea.selectionStart ?? 0,
-          selEnd: existingTextarea.selectionEnd ?? 0,
-          focused: document.activeElement === existingTextarea,
-        }
-      : null;
-
+    this.teardownEmbeddedBar();
     root.empty();
     root.className = "gstack-chat";
 
     if (this.screen.name === "sessions") {
       this.renderSessionsScreen(root);
     } else {
-      await this.renderChatScreen(root, this.screen.sessionId);
+      this.renderChatScreen(root, this.screen.sessionId);
     }
+  }
 
-    if (snapshot) {
-      const restored = root.querySelector("textarea.gstack-chat-textarea") as HTMLTextAreaElement | null;
-      if (restored) {
-        restored.value = snapshot.value;
-        try {
-          restored.setSelectionRange(snapshot.selStart, snapshot.selEnd);
-        } catch {
-          // some browsers throw if the value changed length unexpectedly
-        }
-        if (snapshot.focused) restored.focus();
-      }
+  private teardownEmbeddedBar(): void {
+    if (this.embeddedBar) {
+      this.embeddedBar.destroy();
+      this.embeddedBar = null;
     }
   }
 
@@ -149,11 +132,14 @@ export class OgstackSidebarView extends ItemView {
 
     const meta = item.createDiv({ cls: "gstack-session-meta" });
     meta.createEl("span", { text: relativeTime(session.updatedAt), cls: "gstack-session-time" });
-    const del = meta.createEl("button", { cls: "gstack-session-del", text: "×" });
-    del.title = "Delete";
+    const del = meta.createEl("button", { cls: "gstack-session-del" });
+    setIcon(del, "trash-2");
+    del.title = "Delete chat";
     del.setAttribute("aria-label", `Delete chat: ${session.noteTitle || "Untitled"}`);
     del.addEventListener("click", async (e) => {
       e.stopPropagation();
+      // Quick confirm — sessions are non-trivial to recreate and there's no undo.
+      if (!confirm(`Delete chat "${session.noteTitle || "Untitled"}"? This cannot be undone.`)) return;
       await this.plugin.chatStore.deleteSession(session.id);
       this.render();
     });
@@ -171,313 +157,34 @@ export class OgstackSidebarView extends ItemView {
     });
   }
 
-  // ── Chat screen ──────────────────────────────────────────────
+  // ── Chat screen (BarChat host) ───────────────────────────────
 
-  private async renderChatScreen(root: HTMLElement, sessionId: string): Promise<void> {
+  private renderChatScreen(root: HTMLElement, sessionId: string): void {
     const session = this.plugin.chatStore.getSession(sessionId);
-    if (!session) { this.screen = { name: "sessions" }; this.renderSessionsScreen(root); return; }
-
-    const header = root.createDiv({ cls: "gstack-chat-header" });
-    const back = header.createEl("button", { cls: "gstack-chat-icon-btn", text: "←" });
-    back.setAttribute("aria-label", "Back to sessions list");
-    back.addEventListener("click", () => { this.screen = { name: "sessions" }; this.render(); });
-    header.createEl("span", { text: session.noteTitle || "Chat", cls: "gstack-chat-title" });
-
-    const body = root.createDiv({ cls: "gstack-chat-body" });
-    const msgs = body.createDiv({ cls: "gstack-chat-messages" });
-
-    if (session.messages.length === 0) {
-      this.renderChatEmpty(msgs);
+    if (!session) {
+      this.screen = { name: "sessions" };
+      this.renderSessionsScreen(root);
+      return;
     }
 
-    for (const msg of session.messages) {
-      await this.appendMessage(msgs, msg.role, msg.content, false);
-    }
+    // Mount a BarChat in embedded mode. The host (this view) drives session
+    // switching via setSession; BarChat owns all conversation behavior.
+    const hostEl = root.createDiv({ cls: "gstack-sidebar-bar-host" });
 
-    setTimeout(() => { msgs.scrollTop = msgs.scrollHeight; }, 10);
-
-    const inputArea = root.createDiv({ cls: "gstack-chat-input-area" });
-    this.buildInputArea(inputArea, session, msgs);
-  }
-
-  private renderChatEmpty(container: HTMLElement): void {
-    const el = container.createDiv({ cls: "gstack-chat-intro" });
-    el.createEl("div", { text: "✦ Chat with your vault", cls: "gstack-chat-intro-title" });
-    const tips = [
-      ["Ask", "anything about your linked notes"],
-      ["/command", "run /research, /plan, /review, …"],
-      ["@[[Note]]", "pull a specific note into context"],
-      ["Shift+Enter", "newline · Enter to send"],
-    ];
-    const grid = el.createDiv({ cls: "gstack-chat-intro-grid" });
-    for (const [key, val] of tips) {
-      const row = grid.createDiv({ cls: "gstack-chat-intro-row" });
-      row.createEl("kbd", { text: key, cls: "gstack-chat-intro-key" });
-      row.createEl("span", { text: val, cls: "gstack-chat-intro-val" });
-    }
-  }
-
-  private async appendMessage(
-    container: HTMLElement,
-    role: "user" | "assistant",
-    content: string,
-    streaming: boolean
-  ): Promise<HTMLElement> {
-    const el = container.createDiv({ cls: `gstack-msg gstack-msg-${role}` });
-    if (streaming) {
-      el.createEl("span", { cls: "gstack-msg-cursor", text: "●" });
-    } else if (role === "assistant") {
-      await MarkdownRenderer.render(this.plugin.app, content, el, "", this);
-    } else {
-      // Render user message — highlight [[Wiki Links]] as clickable chips
-      this.renderUserMessage(el, content);
-    }
-    return el;
-  }
-
-  private renderUserMessage(el: HTMLElement, content: string): void {
-    // Split on [[...]] to highlight note references
-    const parts = content.split(/(\[\[[^\]]+\]\])/g);
-    for (const part of parts) {
-      if (part.startsWith("[[") && part.endsWith("]]")) {
-        el.createEl("span", { text: part, cls: "gstack-msg-mention" });
-      } else if (part) {
-        el.createEl("span", { text: part });
-      }
-    }
-  }
-
-  // ── Input area ───────────────────────────────────────────────
-
-  private buildInputArea(container: HTMLElement, session: ChatSession, msgs: HTMLElement): void {
-    const skills = this.plugin.getSkills();
-    const suggestEl = container.createDiv({ cls: "gstack-chat-suggest" });
-    suggestEl.setAttribute("role", "listbox");
-    suggestEl.setAttribute("aria-label", "Skill and note suggestions");
-
-    type SuggestEntry = { type: "skill"; skill: { name: string; description: string } } | { type: "note"; file: TFile };
-    let filteredEntries: SuggestEntry[] = [];
-    let selectedIdx = -1;
-    let currentTrigger: "@" | "/" | null = null;
-    let triggerPos = -1;
-
-    const textarea = container.createEl("textarea", {
-      cls: "gstack-chat-textarea",
-      placeholder: "Ask anything · type / for skills · @ to mention a note",
-    });
-    (textarea as HTMLTextAreaElement).rows = 2;
-
-    const footer = container.createDiv({ cls: "gstack-chat-footer" });
-    const hint = footer.createEl("span", { text: "Enter to send · Shift+Enter for newline", cls: "gstack-chat-hint-text" });
-    hint.style.display = "none";
-    textarea.addEventListener("focus", () => { hint.style.display = ""; });
-    textarea.addEventListener("blur", () => { hint.style.display = "none"; });
-    const sendBtn = footer.createEl("button", { cls: "gstack-chat-send-btn", text: "Send" });
-
-    const setDisabled = (v: boolean) => {
-      (textarea as HTMLTextAreaElement).disabled = v;
-      (sendBtn as HTMLButtonElement).disabled = v;
-    };
-
-    const clearSuggest = () => {
-      suggestEl.empty();
-      suggestEl.classList.remove("visible");
-      filteredEntries = [];
-      selectedIdx = -1;
-      currentTrigger = null;
-      triggerPos = -1;
-    };
-
-    const updateSelection = () => {
-      suggestEl.querySelectorAll(".gstack-chat-suggest-item").forEach((el, i) => {
-        const isSel = i === selectedIdx;
-        el.classList.toggle("selected", isSel);
-        el.setAttribute("aria-selected", String(isSel));
-      });
-    };
-
-    const applyEntry = (entry: SuggestEntry) => {
-      const tv = textarea as HTMLTextAreaElement;
-      const before = tv.value.slice(0, triggerPos);
-      const after = tv.value.slice(tv.selectionStart ?? tv.value.length);
-
-      if (entry.type === "skill") {
-        tv.value = before + `/${entry.skill.name} ` + after;
-      } else {
-        tv.value = before + `[[${entry.file.basename}]]` + after;
-      }
-      clearSuggest();
-      textarea.focus();
-    };
-
-    const renderSuggest = (entries: SuggestEntry[]) => {
-      filteredEntries = entries;
-      suggestEl.empty();
-      if (entries.length === 0) { clearSuggest(); return; }
-
-      suggestEl.classList.add("visible");
-      entries.forEach((entry, i) => {
-        const item = suggestEl.createDiv({ cls: "gstack-chat-suggest-item" + (i === selectedIdx ? " selected" : "") });
-        item.setAttribute("role", "option");
-        item.setAttribute("aria-selected", String(i === selectedIdx));
-        if (entry.type === "skill") {
-          item.createEl("span", { text: `/${entry.skill.name}`, cls: "gstack-chat-suggest-name" });
-          item.createEl("span", { text: entry.skill.description, cls: "gstack-chat-suggest-desc" });
-        } else {
-          item.createEl("span", { text: `@${entry.file.basename}`, cls: "gstack-chat-suggest-name gstack-chat-suggest-note" });
-          item.createEl("span", { text: entry.file.path, cls: "gstack-chat-suggest-desc" });
-        }
-        item.addEventListener("click", () => applyEntry(entry));
-      });
-    };
-
-    let suggestDebounce: ReturnType<typeof setTimeout> | null = null;
-    const onTextareaInput = () => {
-      const tv = textarea as HTMLTextAreaElement;
-      const cursor = tv.selectionStart ?? 0;
-      const text = tv.value.slice(0, cursor);
-
-      // Detect / trigger
-      const slashMatch = text.match(/(?:^|[\s\n])(\/)([^\s]*)$/);
-      if (slashMatch) {
-        triggerPos = cursor - slashMatch[1].length - slashMatch[2].length;
-        currentTrigger = "/";
-        const q = slashMatch[2].toLowerCase();
-        const matched = [...skills.values()]
-          .filter((s) => s.name.toLowerCase().includes(q) || s.description.toLowerCase().includes(q))
-          .slice(0, 6)
-          .map((s): SuggestEntry => ({ type: "skill", skill: s }));
-        renderSuggest(matched);
-        return;
-      }
-
-      // Detect @ trigger
-      const atMatch = text.match(/(?:^|[\s\n])@([^\s\n@]*)$/);
-      if (atMatch) {
-        triggerPos = cursor - 1 - atMatch[1].length;
-        currentTrigger = "@";
-        const q = atMatch[1].toLowerCase();
-        const files = this.plugin.app.vault.getFiles()
-          .filter((f) => f.extension === "md" && f.basename.toLowerCase().includes(q))
-          .slice(0, 6)
-          .map((f): SuggestEntry => ({ type: "note", file: f }));
-        renderSuggest(files);
-        return;
-      }
-
-      clearSuggest();
-    };
-
-    textarea.addEventListener("input", () => {
-      // Debounce — for vaults with thousands of notes, the @ filter rebuilds
-      // a 5k-element list on every keystroke without this.
-      if (suggestDebounce) clearTimeout(suggestDebounce);
-      suggestDebounce = setTimeout(onTextareaInput, 70);
+    this.embeddedBar = new BarChat({
+      app: this.plugin.app,
+      settings: this.plugin.settings,
+      getSkills: () => this.plugin.getSkills(),
+      chatStore: this.plugin.chatStore,
+      host: hostEl,
+      followActiveLeaf: false,
+      onClose: () => {
+        this.screen = { name: "sessions" };
+        this.render();
+      },
     });
 
-    const send = async () => {
-      const tv = textarea as HTMLTextAreaElement;
-      const text = tv.value.trim();
-      if (!text) return;
-      tv.value = "";
-      clearSuggest();
-      setDisabled(true);
-
-      if (text.startsWith("/")) {
-        const skillName = text.slice(1).split(/\s/)[0].trim();
-        const skill = skills.get(skillName);
-        if (skill) {
-          await this.plugin.chatStore.addMessage(session.id, "user", text);
-          await this.appendMessage(msgs, "user", text, false);
-          const runningEl = await this.appendMessage(msgs, "assistant", "", true);
-          runningEl.querySelector(".gstack-msg-cursor")!.textContent = `Running /${skillName}…`;
-          msgs.scrollTop = msgs.scrollHeight;
-
-          await runSkill(skill, this.plugin.app, this.plugin.settings);
-          runningEl.remove();
-
-          const done = `Ran /${skillName} — output written to your note.`;
-          await this.appendMessage(msgs, "assistant", done, false);
-          await this.plugin.chatStore.addMessage(session.id, "assistant", done);
-          msgs.scrollTop = msgs.scrollHeight;
-          setDisabled(false);
-          textarea.focus();
-          return;
-        }
-      }
-
-      // Free-text multi-turn chat
-      await this.plugin.chatStore.addMessage(session.id, "user", text);
-      await this.appendMessage(msgs, "user", text, false);
-
-      const assistantEl = msgs.createDiv({ cls: "gstack-msg gstack-msg-assistant" });
-      assistantEl.createEl("span", { cls: "gstack-msg-cursor", text: "●" });
-      msgs.scrollTop = msgs.scrollHeight;
-
-      this.streamingContent = "";
-      const activeFile = this.plugin.app.workspace.getActiveFile();
-      const historySnapshot = session.messages.slice(0, -1);
-
-      await runChatMessage(
-        text,
-        historySnapshot,
-        this.plugin.app,
-        this.plugin.settings,
-        activeFile,
-        (token) => {
-          this.streamingContent += token;
-          assistantEl.textContent = this.streamingContent;
-          msgs.scrollTop = msgs.scrollHeight;
-        },
-        async () => {
-          assistantEl.empty();
-          await MarkdownRenderer.render(this.plugin.app, this.streamingContent, assistantEl, "", this);
-          await this.plugin.chatStore.addMessage(session.id, "assistant", this.streamingContent);
-          this.streamingContent = "";
-          msgs.scrollTop = msgs.scrollHeight;
-          setDisabled(false);
-          textarea.focus();
-        },
-        (errMsg) => {
-          assistantEl.empty();
-          assistantEl.createEl("span", { text: `Error: ${errMsg}`, cls: "gstack-msg-error" });
-          setDisabled(false);
-        }
-      );
-    };
-
-    textarea.addEventListener("keydown", (e) => {
-      const ke = e as KeyboardEvent;
-      if (ke.key === "Escape" && filteredEntries.length > 0) {
-        ke.preventDefault();
-        clearSuggest();
-        return;
-      }
-      if (ke.key === "ArrowUp" && filteredEntries.length > 0) {
-        ke.preventDefault();
-        selectedIdx = Math.max(selectedIdx - 1, 0);
-        updateSelection();
-        return;
-      }
-      if (ke.key === "ArrowDown" && filteredEntries.length > 0) {
-        ke.preventDefault();
-        selectedIdx = Math.min(selectedIdx + 1, filteredEntries.length - 1);
-        updateSelection();
-        return;
-      }
-      if (ke.key === "Enter" && !ke.shiftKey) {
-        ke.preventDefault();
-        if (selectedIdx >= 0 && filteredEntries[selectedIdx]) {
-          applyEntry(filteredEntries[selectedIdx]);
-          return;
-        }
-        send();
-        return;
-      }
-    });
-
-    sendBtn.addEventListener("click", send);
-    setTimeout(() => textarea.focus(), 50);
+    void this.embeddedBar.setSession(sessionId);
   }
 
   // ── Public API ───────────────────────────────────────────────
@@ -502,6 +209,7 @@ export class OgstackSidebarView extends ItemView {
   }
 
   async onClose(): Promise<void> {
+    this.teardownEmbeddedBar();
     this.storeUnsubscribe?.();
     this.storeUnsubscribe = null;
     if (this.relativeTimeInterval) {

@@ -39,14 +39,27 @@ function parseFrontmatter(content: string): { fm: ParsedFrontmatter; body: strin
   if (!parsed) return null;
 
   // Pick only the keys our schema knows about. Unknown keys are ignored
-  // (forward-compat) rather than failing the parse.
+  // (forward-compat) rather than failing the parse. Hyphenated aliases let us
+  // accept community SKILL.md files that use the gstack-style `allowed-tools`.
   const fm: ParsedFrontmatter = {};
   const known: Array<keyof ParsedFrontmatter> = [
     "name", "description", "output", "max_depth", "max_tokens",
     "mode", "auto_insert", "agent", "allowed_tools", "max_rounds",
   ];
+  const aliases: Record<string, keyof ParsedFrontmatter> = {
+    "allowed-tools": "allowed_tools",
+    "max-rounds": "max_rounds",
+    "max-tokens": "max_tokens",
+    "max-depth": "max_depth",
+    "auto-insert": "auto_insert",
+  };
   for (const k of known) {
     if (k in parsed) (fm as Record<string, string>)[k] = parsed[k];
+  }
+  for (const [alias, canonical] of Object.entries(aliases)) {
+    if (alias in parsed && !(canonical in fm)) {
+      (fm as Record<string, string>)[canonical] = parsed[alias];
+    }
   }
 
   return { fm, body: match[2].trim() };

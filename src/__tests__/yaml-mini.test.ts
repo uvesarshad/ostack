@@ -73,4 +73,45 @@ describe("parseYamlFrontmatter", () => {
   it("treats empty values as empty string", () => {
     expect(parseYamlFrontmatter("flag:")).toEqual({ flag: "" });
   });
+
+  it("parses `|` block scalars preserving newlines", () => {
+    const yaml = "description: |\n  line one\n  line two\nname: x";
+    expect(parseYamlFrontmatter(yaml)).toEqual({
+      description: "line one\nline two",
+      name: "x",
+    });
+  });
+
+  it("parses `>` folded block scalars by joining with spaces", () => {
+    const yaml = "description: >\n  line one\n  line two\nname: x";
+    expect(parseYamlFrontmatter(yaml)).toEqual({
+      description: "line one line two",
+      name: "x",
+    });
+  });
+
+  it("parses block sequences under an empty-value key", () => {
+    const yaml = "triggers:\n  - one\n  - two\n  - three\nname: x";
+    expect(parseYamlFrontmatter(yaml)).toEqual({
+      triggers: "[one, two, three]",
+      name: "x",
+    });
+  });
+
+  it("strips surrounding quotes inside block sequence items", () => {
+    const yaml = `tags:\n  - "with space"\n  - 'quoted'`;
+    expect(parseYamlFrontmatter(yaml)).toEqual({
+      tags: "[with space, quoted]",
+    });
+  });
+
+  it("tolerantly skips indented map-style continuations we don't model", () => {
+    // No leading `-` on the indented lines — treat as unsupported nested map.
+    // Should not fail the whole parse, just ignore those lines.
+    const yaml = "meta:\n  author: jane\n  date: today\nname: x";
+    expect(parseYamlFrontmatter(yaml)).toEqual({
+      meta: "",
+      name: "x",
+    });
+  });
 });
