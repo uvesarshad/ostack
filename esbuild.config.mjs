@@ -23,16 +23,33 @@ try {
   // No .env — outputs only to repo root
 }
 
-// Build outputs directly to vault when VAULT_PATH is set, otherwise repo root
-const outfile = vaultPluginDir ? path.join(vaultPluginDir, "main.js") : "main.js";
+// Production builds always emit to the repo root (so `git clone` users and
+// the GitHub Release zipper see a current main.js), AND additionally sync to
+// VAULT_PATH for local dev.
+// Dev/watch builds only emit to the vault when VAULT_PATH is set — keeps the
+// repo's main.js untouched until you cut a release.
+const outfile = (prod || !vaultPluginDir) ? "main.js" : path.join(vaultPluginDir, "main.js");
 
-// Copy manifest.json + styles.css alongside main.js
+// Copy manifest.json + styles.css alongside main.js. In prod we mirror to both
+// repo root and the vault (if VAULT_PATH is set).
 function syncStatics() {
-  const dest = vaultPluginDir ?? ".";
-  for (const file of ["manifest.json", "styles.css"]) {
-    if (fs.existsSync(file)) fs.copyFileSync(file, path.join(dest, file));
+  const destinations = prod
+    ? [".", ...(vaultPluginDir ? [vaultPluginDir] : [])]
+    : [vaultPluginDir ?? "."];
+
+  for (const dest of destinations) {
+    for (const file of ["manifest.json", "styles.css"]) {
+      if (fs.existsSync(file)) fs.copyFileSync(file, path.join(dest, file));
+    }
+    // Mirror main.js to the second destination in prod (esbuild only writes
+    // outfile once, so the vault copy needs to happen here).
+    if (prod && dest === vaultPluginDir && fs.existsSync("main.js")) {
+      fs.copyFileSync("main.js", path.join(dest, "main.js"));
+    }
+    if (vaultPluginDir && dest === vaultPluginDir) {
+      console.log(`  ✓ synced → ${vaultPluginDir}`);
+    }
   }
-  if (vaultPluginDir) console.log(`  ✓ synced → ${vaultPluginDir}`);
 }
 
 // ── esbuild context ────────────────────────────────────────────────────────────
