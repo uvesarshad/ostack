@@ -1,6 +1,6 @@
 {
   "name": "ogstack",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Vault-aware skill system for Obsidian",
   "main": "main.js",
   "scripts": {
