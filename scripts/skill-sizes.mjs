@@ -1,0 +1,10 @@
+import fs from "node:fs";
+const m = fs.readFileSync("src/builtin-skills.ts", "utf8");
+const re = /name: "([^"]+)",[\s\S]+?content: ("[\s\S]*?"),\s+\}/g;
+const out = [];
+let x;
+while ((x = re.exec(m)) !== null) out.push([x[1], JSON.parse(x[2]).length]);
+out.sort((a, b) => b[1] - a[1]);
+console.log("Top 20 skills by size:");
+for (const [n, l] of out.slice(0, 20)) console.log(`  ${n.padEnd(35)} ${l.toLocaleString("en-US")}`);
+console.log(`\nTotal ${out.length} skills, ${out.reduce((s,[,l])=>s+l,0).toLocaleString("en-US")} bytes`);

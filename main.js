@@ -24,6 +24,150 @@ __export(main_exports, {
 module.exports = __toCommonJS(main_exports);
 var import_obsidian12 = require("obsidian");
 
+// src/getting-started.ts
+var GETTING_STARTED_NOTE = `# Welcome to ogstack \u2726
+
+You just installed **ogstack** \u2014 a vault-aware AI skill system for Obsidian. Your linked notes become the context for every conversation. This note is a quick reference. Keep it, edit it, or delete it once you're up and running.
+
+> **Tip:** This note is a regular markdown file. Edit it freely \u2014 it won't be recreated unless you uninstall and reinstall the plugin.
+
+---
+
+## 1. Add your API key (60 seconds)
+
+Open **Settings \u2192 ogstack** and pick a provider:
+
+| Provider | Free? | Best for |
+|---|---|---|
+| **Claude** (Anthropic) | Paid API | Default. Best reasoning, agent skills work here. [Get key](https://console.anthropic.com/) |
+| **OpenAI** | Paid API | GPT-5, GPT-4o. [Get key](https://platform.openai.com/api-keys) |
+| **Gemini** | Free tier | Generous free tier. [Get key](https://aistudio.google.com/apikey) |
+| **xAI / Grok** | Paid API | Grok models. [Get key](https://console.x.ai/) |
+| **Ollama** | Free, local | Privacy-first. Runs models on your machine. No key needed. |
+| **Claude CLI / Codex CLI** | Subscription | Uses your existing Claude Code or Codex CLI login. No API key. |
+
+Paste the key, pick your model (defaults are sensible), and you're done.
+
+---
+
+## 2. Start a conversation
+
+Three ways to open ogstack:
+
+- **Floating bar** \u2014 press **Ctrl/Cmd + Shift + Space** anywhere. The bar pops up centered. Drag the header to reposition; drag the corner to resize. Your geometry persists.
+- **Sidebar** \u2014 click the \u2726 wand icon in the left ribbon. Full session history on one screen.
+- **Per-note chat** \u2014 both surfaces auto-bind to the active note. Switch notes, the chat follows.
+
+In the input row:
+
+- Type a message \u2192 chat normally with vault context auto-attached
+- Type \`/\` \u2192 pick a skill (research, plan, review, \u2026)
+- Type \`@\` \u2192 mention a specific note to inject its content for this turn
+
+---
+
+## 3. Try a built-in skill
+
+Open any note that has linked notes (\`[[Other Note]]\` references). Then in the chat:
+
+- **\`/research\`** \u2014 synthesizes the linked notes into a structured research brief
+- **\`/plan\`** \u2014 drafts a project plan from your goals
+- **\`/outline\`** \u2014 builds a document outline from linked research
+- **\`/campaign\`** \u2014 turns product + audience notes into a marketing campaign
+- **\`/review\`** \u2014 editorial critique of the active note
+
+The skill reads your linked notes (up to its configured depth), passes them to the model with the right system prompt, and streams the answer. Use **Insert at cursor**, **Append**, or **Copy** on any reply to bring it back into your note.
+
+---
+
+## 4. Add your own skills
+
+Skills live in the \`_agent/\` folder of your vault. Three valid layouts:
+
+\`\`\`
+_agent/
+\u251C\u2500\u2500 quick-note.md                       \u2190 flat (single file)
+\u251C\u2500\u2500 competitor-analysis/
+\u2502   \u2514\u2500\u2500 SKILL.md                        \u2190 foldered (with optional resources next to it)
+\u2514\u2500\u2500 gstack-bundle/                      \u2190 bundled (a whole collection)
+    \u251C\u2500\u2500 research/SKILL.md
+    \u251C\u2500\u2500 plan/SKILL.md
+    \u2514\u2500\u2500 ship/SKILL.md
+\`\`\`
+
+Every \`SKILL.md\` starts with frontmatter:
+
+\`\`\`markdown
+---
+name: my-skill
+description: One-line summary that shows in the / picker
+mode: oneshot          # or "interactive" \u2014 interactive skills can ask questions via <ASK>
+output: inline         # or "new-note"
+max_depth: 3
+max_tokens: 6000
+---
+
+Your system prompt goes here.
+
+The placeholder \`{{VAULT_CONTEXT}}\` gets replaced with the linked-note context.
+\`\`\`
+
+Save the file and it appears as \`/my-skill\` within 2 seconds \u2014 no restart.
+
+### Import skills
+
+**Command Palette \u2192 "ogstack: Import skill from GitHub"** opens the import modal. You can:
+
+- Paste a GitHub **repo URL** (e.g. \`https://github.com/owner/skills\`) \u2192 scans the repo, lets you pick which skills to install
+- Paste a **single file URL** (e.g. \`\u2026/blob/main/skill.md\`) \u2192 imports that one skill
+- Click **Import local files** \u2192 file picker for SKILL.md files already on disk
+
+---
+
+## 5. Interactive questions
+
+When a skill needs clarification, it asks via the \`<ASK>\` protocol \u2014 the question renders as a real form widget instead of inline prose:
+
+- Plain question \u2192 textarea
+- Multiple-choice \u2192 radio buttons
+- Multi-select \u2192 checkboxes
+- Always has an **Other** row that reveals a free-text input
+
+Press **Enter** to submit (Shift+Enter for newlines).
+
+---
+
+## 6. Long conversations
+
+When a chat gets long, ogstack will offer to **Compact** it. The last two turns stay verbatim; everything before is summarized into a leading bullet-list message. Agent tool calls survive compaction so the agent doesn't re-explore notes it already read.
+
+Click **Save to note** in the toolbar to dump the entire transcript into the bound note before compacting if you want to preserve the full record.
+
+---
+
+## Where things live
+
+- \`_agent/\` \u2014 your custom skills
+- \`_agent/chats/\` \u2014 saved chat sessions (one file per session)
+- \`.obsidian/plugins/ogstack/data.json\` \u2014 your settings + API key
+
+> **Privacy note:** API keys are stored plaintext at \`.obsidian/plugins/ogstack/data.json\`. Obsidian Sync excludes plugin data by default. Third-party sync (Git, Dropbox, iCloud) WILL carry the key \u2014 exclude this file if you sync your vault to a public location.
+
+---
+
+## Going further
+
+- **GitHub**: [ogstack repo](https://github.com/uvesarshad/ostack) \u2014 issues, PRs, discussion
+- **Sponsor**: [GitHub Sponsors](https://github.com/sponsors/uvesarshad) \u2014 if this saves you time, consider supporting development
+- **Built by** [Uves Arshad](https://x.com/uvesarshad)
+
+Inspired by [gstack](https://github.com/garrytan/gstack) by [Garry Tan](https://x.com/garrytan).
+
+---
+
+*You can delete this note when you no longer need it.*
+`;
+
 // src/bar-chat.ts
 var import_obsidian3 = require("obsidian");
 
@@ -3942,121 +4086,8 @@ var import_obsidian6 = require("obsidian");
 // src/builtin-skills.ts
 var BUILTIN_SKILL_FILES = [
   {
-    name: "research",
-    content: `---
-name: research
-description: Synthesize your linked notes into a structured research brief
-output: inline
-max_depth: 3
-max_tokens: 6000
----
-
-You are a senior research analyst. The user's vault notes on this topic are provided below.
-
-Your task: synthesize a comprehensive research brief from these notes. Structure your output as:
-
-**Overview**
-A 2-3 sentence summary of the topic and what the notes cover.
-
-**Key Findings**
-Bullet points of the most important facts, insights, and data points found across the notes.
-
-**Themes & Patterns**
-Recurring themes, contradictions, or patterns you notice across the linked notes.
-
-**Gaps & Open Questions**
-What is missing, unclear, or would require further research.
-
-**Sources**
-A brief list of which notes contributed which key points.
-
-Rules:
-- Only use facts and claims present in the notes. Do not invent or assume.
-- If notes contradict each other, surface the contradiction explicitly.
-- Prioritize recency \u2014 more recently modified notes should carry more weight.
-- Be concise. This is a brief, not an essay.
-
-{{VAULT_CONTEXT}}`
-  },
-  {
     name: "campaign",
-    content: `---
-name: campaign
-description: Turn your product and audience notes into a full campaign plan
-output: inline
-max_depth: 3
-max_tokens: 6000
----
-
-You are a senior marketing strategist. The user has provided their product notes and research below.
-
-Generate a complete campaign plan including:
-
-**Target Audience Summary**
-Drawn directly from the notes \u2014 ICP, pain points, motivations. No invented personas.
-
-**Core Message & Positioning**
-The single most important thing to communicate and why it matters to this audience.
-
-**Channel Strategy**
-Which channels to prioritize and why, based on what the notes reveal about the audience.
-
-**3 Campaign Concepts**
-For each concept provide:
-- A working title and one-sentence description
-- Core message / angle
-- Sample headline and body copy direction
-- Primary channel and format
-
-**Success Metrics**
-What to measure, based on the goals implied in the notes.
-
-Rules:
-- Use the specific details from the notes. Do not invent facts not present in the context.
-- If the notes lack enough product or audience information, say so explicitly and note what's missing.
-- Keep copy direction concrete \u2014 avoid generic marketing language.
-
-{{VAULT_CONTEXT}}`
-  },
-  {
-    name: "plan",
-    content: `---
-name: plan
-description: Draft a project or sprint plan from your goals and context notes
-output: inline
-max_depth: 3
-max_tokens: 6000
----
-
-You are a senior project manager and product strategist. The user's planning notes are provided below.
-
-Generate a structured project plan including:
-
-**Goal & Success Criteria**
-What does done look like? Drawn from the notes, made concrete and measurable.
-
-**Scope**
-What is in scope. What is explicitly out of scope (if notes suggest it).
-
-**Milestones**
-3-7 key milestones with a logical sequence. Each milestone should have a clear deliverable.
-
-**Task Breakdown**
-For each milestone, list the key tasks. Keep tasks atomic \u2014 one person, one output.
-
-**Dependencies & Risks**
-What must happen before what. Known risks from the notes, with a mitigation suggestion each.
-
-**Open Questions**
-Decisions or unknowns from the notes that must be resolved before work can begin.
-
-Rules:
-- Ground every milestone and task in the actual goals and context from the notes.
-- Do not pad the plan with generic project management boilerplate.
-- If the notes are too vague to plan from, say so and list the missing information needed.
-- Estimates are optional \u2014 only include them if the notes contain timeline information.
-
-{{VAULT_CONTEXT}}`
+    content: "---\nname: campaign\ndescription: Turn your product and audience notes into a full campaign plan\noutput: inline\nmax_depth: 3\nmax_tokens: 6000\n---\n\nYou are a senior marketing strategist. The user has provided their product notes and research below.\n\nGenerate a complete campaign plan including:\n\n**Target Audience Summary**\nDrawn directly from the notes \u2014 ICP, pain points, motivations. No invented personas.\n\n**Core Message & Positioning**\nThe single most important thing to communicate and why it matters to this audience.\n\n**Channel Strategy**\nWhich channels to prioritize and why, based on what the notes reveal about the audience.\n\n**3 Campaign Concepts**\nFor each concept provide:\n- A working title and one-sentence description\n- Core message / angle\n- Sample headline and body copy direction\n- Primary channel and format\n\n**Success Metrics**\nWhat to measure, based on the goals implied in the notes.\n\nRules:\n- Use the specific details from the notes. Do not invent facts not present in the context.\n- If the notes lack enough product or audience information, say so explicitly and note what's missing.\n- Keep copy direction concrete \u2014 avoid generic marketing language.\n\n{{VAULT_CONTEXT}}\n"
   },
   {
     name: "outline",
@@ -4099,150 +4130,20 @@ Rules:
 - If the research has obvious gaps for the implied document, flag them.
 - Write section descriptions in imperative voice: "Explain X" not "This section discusses X."
 
-{{VAULT_CONTEXT}}`
+{{VAULT_CONTEXT}}
+`
+  },
+  {
+    name: "plan",
+    content: "---\nname: plan\ndescription: Draft a project or sprint plan from your goals and context notes\noutput: inline\nmax_depth: 3\nmax_tokens: 6000\n---\n\nYou are a senior project manager and product strategist. The user's planning notes are provided below.\n\nGenerate a structured project plan including:\n\n**Goal & Success Criteria**\nWhat does done look like? Drawn from the notes, made concrete and measurable.\n\n**Scope**\nWhat is in scope. What is explicitly out of scope (if notes suggest it).\n\n**Milestones**\n3-7 key milestones with a logical sequence. Each milestone should have a clear deliverable.\n\n**Task Breakdown**\nFor each milestone, list the key tasks. Keep tasks atomic \u2014 one person, one output.\n\n**Dependencies & Risks**\nWhat must happen before what. Known risks from the notes, with a mitigation suggestion each.\n\n**Open Questions**\nDecisions or unknowns from the notes that must be resolved before work can begin.\n\nRules:\n- Ground every milestone and task in the actual goals and context from the notes.\n- Do not pad the plan with generic project management boilerplate.\n- If the notes are too vague to plan from, say so and list the missing information needed.\n- Estimates are optional \u2014 only include them if the notes contain timeline information.\n\n{{VAULT_CONTEXT}}\n"
+  },
+  {
+    name: "research",
+    content: "---\nname: research\ndescription: Synthesize your linked notes into a structured research brief\noutput: inline\nmax_depth: 3\nmax_tokens: 6000\n---\n\nYou are a senior research analyst. The user's vault notes on this topic are provided below.\n\nYour task: synthesize a comprehensive research brief from these notes. Structure your output as:\n\n**Overview**\nA 2-3 sentence summary of the topic and what the notes cover.\n\n**Key Findings**\nBullet points of the most important facts, insights, and data points found across the notes.\n\n**Themes & Patterns**\nRecurring themes, contradictions, or patterns you notice across the linked notes.\n\n**Gaps & Open Questions**\nWhat is missing, unclear, or would require further research.\n\n**Sources**\nA brief list of which notes contributed which key points.\n\nRules:\n- Only use facts and claims present in the notes. Do not invent or assume.\n- If notes contradict each other, surface the contradiction explicitly.\n- Prioritize recency \u2014 more recently modified notes should carry more weight.\n- Be concise. This is a brief, not an essay.\n\n{{VAULT_CONTEXT}}\n"
   },
   {
     name: "review",
-    content: `---
-name: review
-description: Get an editorial critique and improvement suggestions for this note
-output: inline
-max_depth: 2
-max_tokens: 4000
----
-
-You are a senior editor. Review the active note and provide a direct, useful critique.
-
-Structure your review as:
-
-**Summary of the Note**
-1-2 sentences on what this note is and what it's trying to accomplish.
-
-**Strengths**
-What's working well \u2014 specific, not generic praise.
-
-**Issues**
-Problems with clarity, logic, structure, completeness, or accuracy. Be direct. For each issue:
-- What the problem is
-- Why it matters
-- A specific suggestion to fix it
-
-**Missing Content**
-What should be in this note that isn't \u2014 based on the implied purpose and the linked notes' context.
-
-**Contradictions**
-Any claims in the active note that conflict with linked notes.
-
-**Top 3 Priority Edits**
-If the user does nothing else: the three changes with the highest impact.
-
-Rules:
-- Be honest and direct. Vague positive feedback is not useful.
-- Ground all critique in the actual content of the note.
-- Use the linked notes as context \u2014 flag when the active note ignores or contradicts them.
-- Do not rewrite the note. Critique and guide only.
-
-{{VAULT_CONTEXT}}`
-  },
-  {
-    name: "vault-agent",
-    content: `---
-name: vault-agent
-description: Agent that explores and edits your vault using tools (Claude API only)
-agent: true
-allowed_tools: [list_notes, read_note, search_vault, get_active_note, append_note, write_note]
-max_rounds: 15
----
-
-You are a vault research and editing agent. You have tools to list, read, search, append to,
-and write notes in the user's Obsidian vault. The user's active note is NOT preloaded into
-your context \u2014 call get_active_note when you need it.
-
-When the user asks a question:
-1. Decide which tools you need. Prefer searching and reading over guessing.
-2. Use tools one or more times to gather grounded information.
-3. Synthesize a clear, concise answer citing the note paths you used.
-
-When the user asks for edits:
-1. Read the relevant notes first so you don't overwrite blindly.
-2. Use append_note for additive changes; only use write_note when fully replacing a file.
-3. Confirm what you changed and where, at the end.
-
-Rules:
-- Only use facts present in the notes. Never invent vault content.
-- Stop calling tools as soon as you have enough to answer.
-- Keep your final answer focused \u2014 no recap of every tool call.
-- If write_note or append_note returns "agent file writes are disabled", do NOT retry. Tell the user the setting is off (Settings \u2192 ogstack \u2192 Agent safety) and offer the proposed change as a markdown block they can paste themselves.
-- If a tool result ends with "[truncated: \u2026]", the file or list is larger than the cap. Ask a more specific question rather than reading the same path repeatedly.`
-  },
-  {
-    name: "summarize",
-    content: `---
-name: summarize
-description: One-paragraph distillation of the active note
-output: inline
-max_depth: 1
-max_tokens: 3000
----
-
-You are a precise summarizer. Distill the active note into a single dense paragraph
-of 3-5 sentences that captures:
-
-- What this note is about (one sentence).
-- The key claims, findings, or decisions.
-- Any open questions or next steps the note flags.
-
-Rules:
-- One paragraph. No bullet lists. No headings.
-- Drop preamble like "This note is about\u2026" \u2014 just give the content.
-- Stay grounded \u2014 do not invent facts not present in the note.
-
-{{VAULT_CONTEXT}}`
-  },
-  {
-    name: "plan-interactive",
-    content: `---
-name: plan-interactive
-description: Project plan with clarifying questions if scope is ambiguous
-output: inline
-mode: interactive
-max_depth: 3
-max_tokens: 6000
----
-
-You are a senior project manager. The user's planning notes are provided below.
-
-Before producing the plan, scan the notes for ambiguity. If the goal, timeline,
-team size, success criteria, or scope is unclear, ask 1-3 clarifying questions
-wrapped in <ASK>question text</ASK> tags. The user will answer and you'll continue.
-Skip the ASK step entirely if the notes are clear.
-
-Once you have what you need, output:
-
-**Goal & Success Criteria**
-What does done look like? Concrete and measurable.
-
-**Scope**
-In scope \xB7 out of scope.
-
-**Milestones**
-3-7 milestones with deliverables.
-
-**Task Breakdown**
-For each milestone, the key atomic tasks.
-
-**Dependencies & Risks**
-Sequence dependencies + named risks with one mitigation each.
-
-**Open Questions**
-What still needs answering before kickoff.
-
-Rules:
-- Ground every milestone in actual notes content.
-- No generic PM boilerplate.
-- Estimates only if the notes contain timeline info.
-
-{{VAULT_CONTEXT}}`
+    content: "---\nname: review\ndescription: Get an editorial critique and improvement suggestions for this note\noutput: inline\nmax_depth: 2\nmax_tokens: 4000\n---\n\nYou are a senior editor. Review the active note and provide a direct, useful critique.\n\nStructure your review as:\n\n**Summary of the Note**\n1-2 sentences on what this note is and what it's trying to accomplish.\n\n**Strengths**\nWhat's working well \u2014 specific, not generic praise.\n\n**Issues**\nProblems with clarity, logic, structure, completeness, or accuracy. Be direct. For each issue:\n- What the problem is\n- Why it matters\n- A specific suggestion to fix it\n\n**Missing Content**\nWhat should be in this note that isn't \u2014 based on the implied purpose and the linked notes' context.\n\n**Contradictions**\nAny claims in the active note that conflict with linked notes.\n\n**Top 3 Priority Edits**\nIf the user does nothing else: the three changes with the highest impact.\n\nRules:\n- Be honest and direct. Vague positive feedback is not useful.\n- Ground all critique in the actual content of the note.\n- Use the linked notes as context \u2014 flag when the active note ignores or contradicts them.\n- Do not rewrite the note. Critique and guide only.\n\n{{VAULT_CONTEXT}}\n"
   }
 ];
 
@@ -4377,8 +4278,8 @@ function createSkillLoader(app, pluginDir, registrar) {
       }
       return;
     }
-    const { files, folders } = await app.vault.adapter.list(CUSTOM_SKILLS_FOLDER);
-    for (const filePath of files.filter((f) => f.endsWith(".md"))) {
+    const found = await discoverSkillFiles(app, CUSTOM_SKILLS_FOLDER, 0);
+    for (const filePath of found) {
       try {
         const content = await app.vault.adapter.read(filePath);
         const skill = parseSKILL(content, filePath);
@@ -4386,19 +4287,6 @@ function createSkillLoader(app, pluginDir, registrar) {
           registerSkill(skill, false, filePath);
       } catch (e) {
         console.warn(`ogstack: could not read skill at ${filePath}`);
-      }
-    }
-    for (const folderPath of folders) {
-      const skillFilePath = `${folderPath}/SKILL.md`;
-      try {
-        if (!await app.vault.adapter.exists(skillFilePath))
-          continue;
-        const content = await app.vault.adapter.read(skillFilePath);
-        const skill = parseSKILL(content, skillFilePath);
-        if (skill)
-          registerSkill(skill, false, skillFilePath);
-      } catch (e) {
-        console.warn(`ogstack: could not read skill at ${skillFilePath}`);
       }
     }
   }
@@ -4454,6 +4342,33 @@ function isCustomSkillFile(path) {
   if (rel.endsWith("/SKILL.md"))
     return true;
   return false;
+}
+var MAX_SKILL_DEPTH = 5;
+async function discoverSkillFiles(app, folder, depth) {
+  const out = [];
+  if (depth > MAX_SKILL_DEPTH)
+    return out;
+  let listing;
+  try {
+    listing = await app.vault.adapter.list(folder);
+  } catch (e) {
+    return out;
+  }
+  for (const filePath of listing.files) {
+    const lower = filePath.toLowerCase();
+    if (!lower.endsWith(".md"))
+      continue;
+    if (depth === 0) {
+      out.push(filePath);
+    } else if (lower.endsWith("/skill.md")) {
+      out.push(filePath);
+    }
+  }
+  for (const sub of listing.folders) {
+    const nested = await discoverSkillFiles(app, sub, depth + 1);
+    out.push(...nested);
+  }
+  return out;
 }
 
 // src/skill-runner.ts
@@ -5381,6 +5296,11 @@ var GStackPlugin = class extends import_obsidian12.Plugin {
       }
     );
     await this.skillLoader.loadAll();
+    const pluginData = await this.loadData();
+    if (!(pluginData == null ? void 0 : pluginData.gstackSkillsWritten)) {
+      void this.fetchAndWriteGstackSkills(pluginData);
+    }
+    const freshData = pluginData;
     this.statusIndicator = this.addStatusBarItem();
     this.statusIndicator.style.display = "none";
     this.bar = new BarChat({
@@ -5435,9 +5355,89 @@ var GStackPlugin = class extends import_obsidian12.Plugin {
         }).open();
       }
     });
-    const data = await this.loadData();
-    if (!(data == null ? void 0 : data.hasSeenWelcome)) {
+    if (!(freshData == null ? void 0 : freshData.hasSeenWelcome)) {
+      await this.createGettingStartedNote();
       new WelcomeModal(this.app, this).open();
+    }
+  }
+  // Write `Welcome to ogstack.md` at the vault root the first time the plugin
+  // loads. Idempotent — if the file already exists (re-installed, user kept
+  // their old vault) we don't overwrite their copy. After write, opens the
+  // note in the active leaf so the user immediately sees something useful.
+  async createGettingStartedNote() {
+    const fileName = "Welcome to ogstack.md";
+    const exists = await this.app.vault.adapter.exists(fileName);
+    if (exists)
+      return;
+    try {
+      await this.app.vault.create(fileName, GETTING_STARTED_NOTE);
+      const file = this.app.vault.getAbstractFileByPath(fileName);
+      if (file && "extension" in file) {
+        await this.app.workspace.getLeaf(false).openFile(file);
+      }
+    } catch (e) {
+    }
+  }
+  async fetchAndWriteGstackSkills(existingData) {
+    var _a;
+    const OWNER = "garrytan";
+    const REPO = "gstack";
+    const BRANCH = "main";
+    const RESERVED = /* @__PURE__ */ new Set(["research", "plan", "campaign", "outline", "review"]);
+    const base = `${CUSTOM_SKILLS_FOLDER}/gstack`;
+    try {
+      const treeRes = await (0, import_obsidian12.requestUrl)({
+        url: `https://api.github.com/repos/${OWNER}/${REPO}/git/trees/${BRANCH}?recursive=1`,
+        headers: { "User-Agent": "ogstack-plugin", "Accept": "application/vnd.github.v3+json" }
+      });
+      const tree = treeRes.json;
+      if (!tree.tree)
+        return;
+      const skillPaths = tree.tree.filter(
+        (e) => e.type === "blob" && e.path.endsWith("/SKILL.md") && !e.path.startsWith("test/") && e.path !== "SKILL.md"
+      ).map((e) => e.path);
+      if (!await this.app.vault.adapter.exists(base)) {
+        try {
+          await this.app.vault.adapter.mkdir(base);
+        } catch (e) {
+        }
+      }
+      let written = 0;
+      for (const p of skillPaths) {
+        try {
+          const res = await (0, import_obsidian12.requestUrl)({
+            url: `https://raw.githubusercontent.com/${OWNER}/${REPO}/${BRANCH}/${p}`
+          });
+          const content = res.text;
+          const nameMatch = content.match(/^---\r?\n[\s\S]*?^name:\s*(.+?)\s*$/m);
+          if (!nameMatch)
+            continue;
+          const name = nameMatch[1].trim();
+          if (RESERVED.has(name))
+            continue;
+          if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,39}$/.test(name))
+            continue;
+          const dir = `${base}/${name}`;
+          if (!await this.app.vault.adapter.exists(dir)) {
+            try {
+              await this.app.vault.adapter.mkdir(dir);
+            } catch (e) {
+            }
+          }
+          const file = `${dir}/SKILL.md`;
+          if (!await this.app.vault.adapter.exists(file)) {
+            await this.app.vault.adapter.write(file, content);
+            written++;
+          }
+        } catch (e) {
+        }
+      }
+      await this.saveData({ ...existingData, gstackSkillsWritten: true });
+      if (written > 0) {
+        (_a = this.skillLoader) == null ? void 0 : _a.loadAll();
+        new import_obsidian12.Notice(`ogstack: ${written} gstack skills installed to _agent/gstack/`);
+      }
+    } catch (e) {
     }
   }
   onunload() {

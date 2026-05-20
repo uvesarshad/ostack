@@ -188,29 +188,20 @@ export function createSkillLoader(
       return;
     }
 
-    const { files, folders } = await app.vault.adapter.list(CUSTOM_SKILLS_FOLDER);
-
-    // Flat style: _agent/skill_name.md
-    for (const filePath of files.filter((f: string) => f.endsWith(".md"))) {
+    // Walk _agent/ recursively. Three valid layouts now:
+    //   - flat:       _agent/skill.md
+    //   - foldered:   _agent/skill/SKILL.md
+    //   - bundled:    _agent/bundle/skill/SKILL.md       (any depth)
+    // The skill's identity is its frontmatter `name`, NOT the folder path —
+    // bundles only organize files on disk; the command name stays clean.
+    const found = await discoverSkillFiles(app, CUSTOM_SKILLS_FOLDER, 0);
+    for (const filePath of found) {
       try {
         const content = await app.vault.adapter.read(filePath);
         const skill = parseSKILL(content, filePath);
         if (skill) registerSkill(skill, false, filePath);
       } catch {
         console.warn(`ogstack: could not read skill at ${filePath}`);
-      }
-    }
-
-    // Folder style: _agent/skill_name/SKILL.md
-    for (const folderPath of folders) {
-      const skillFilePath = `${folderPath}/SKILL.md`;
-      try {
-        if (!(await app.vault.adapter.exists(skillFilePath))) continue;
-        const content = await app.vault.adapter.read(skillFilePath);
-        const skill = parseSKILL(content, skillFilePath);
-        if (skill) registerSkill(skill, false, skillFilePath);
-      } catch {
-        console.warn(`ogstack: could not read skill at ${skillFilePath}`);
       }
     }
   }
@@ -272,7 +263,49 @@ function isCustomSkillFile(path: string): boolean {
   const rel = path.slice(CUSTOM_SKILLS_FOLDER.length + 1);
   // Flat: _agent/skill.md (no subdirectory)
   if (!rel.includes("/") && rel.endsWith(".md")) return true;
-  // Folder-based: _agent/skill_name/SKILL.md
+  // Folder-based or bundled: any /SKILL.md at any depth.
   if (rel.endsWith("/SKILL.md")) return true;
   return false;
+}
+
+// Walk a folder recursively, returning paths to every .md file the loader
+// should attempt to parse. We honor two conventions:
+//   - any `*.md` directly inside `_agent/`             (flat skills)
+//   - any `SKILL.md` at any depth below `_agent/`      (foldered + bundles)
+// Bundles can nest arbitrarily; we cap recursion at 5 levels to keep a
+// pathological vault from stalling startup.
+const MAX_SKILL_DEPTH = 5;
+async function discoverSkillFiles(
+  app: import("obsidian").App,
+  folder: string,
+  depth: number
+): Promise<string[]> {
+  const out: string[] = [];
+  if (depth > MAX_SKILL_DEPTH) return out;
+
+  let listing: { files: string[]; folders: string[] };
+  try {
+    listing = await app.vault.adapter.list(folder);
+  } catch {
+    return out;
+  }
+
+  for (const filePath of listing.files) {
+    const lower = filePath.toLowerCase();
+    if (!lower.endsWith(".md")) continue;
+    // Depth 0 (the _agent/ root) accepts any .md — that's the flat layout.
+    // Deeper levels only accept SKILL.md so that auxiliary notes inside a
+    // bundle (README.md, CHANGELOG.md, helper docs) don't register as skills.
+    if (depth === 0) {
+      out.push(filePath);
+    } else if (lower.endsWith("/skill.md")) {
+      out.push(filePath);
+    }
+  }
+
+  for (const sub of listing.folders) {
+    const nested = await discoverSkillFiles(app, sub, depth + 1);
+    out.push(...nested);
+  }
+  return out;
 }

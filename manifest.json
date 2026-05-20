@@ -1,11 +1,12 @@
 {
   "id": "ogstack",
   "name": "ogstack",
-  "version": "1.0.0",
-  "minAppVersion": "1.0.0",
+  "version": "0.2.0",
+  "minAppVersion": "0.2.0",
   "description": "Vault-aware skill system — run gstack skills with your linked notes as context.",
   "author": "Uves Arshad",
   "authorUrl": "https://x.com/uvesarshad",
+  "fundingUrl": "https://github.com/sponsors/uvesarshad",
   "isDesktopOnly": true,
   "requestUrls": [
     "https://api.anthropic.com",

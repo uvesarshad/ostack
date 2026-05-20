@@ -1,9 +1,10 @@
-import { Plugin } from "obsidian";
+import { Notice, Plugin, requestUrl } from "obsidian";
+import { GETTING_STARTED_NOTE } from "./getting-started";
 import { BarChat } from "./bar-chat";
 import { ChatStore } from "./chat-store";
 import { DEFAULT_SETTINGS, GStackSettings, GStackSettingTab } from "./settings";
 import { OgstackSidebarView, SIDEBAR_VIEW_TYPE } from "./sidebar-view";
-import { createSkillLoader, Skill, SkillLoader } from "./skill-loader";
+import { createSkillLoader, CUSTOM_SKILLS_FOLDER, Skill, SkillLoader } from "./skill-loader";
 import { runSkill } from "./skill-runner";
 import { WelcomeModal } from "./welcome-modal";
 import { ImportSkillModal } from "./import-skill-modal";
@@ -44,6 +45,17 @@ export default class GStackPlugin extends Plugin {
     );
 
     await this.skillLoader.loadAll();
+
+    const pluginData = (await this.loadData()) as Record<string, unknown> | null;
+
+    // Fetch gstack skills from GitHub on first install and write them to the
+    // vault so the recursive loader picks them up. Runs in the background —
+    // doesn't block plugin load. Silently skips on network failure.
+    if (!pluginData?.gstackSkillsWritten) {
+      void this.fetchAndWriteGstackSkills(pluginData);
+    }
+
+    const freshData = pluginData;
 
     // Status bar indicator (shows pulse when AI streams in background)
     this.statusIndicator = this.addStatusBarItem();
@@ -104,10 +116,98 @@ export default class GStackPlugin extends Plugin {
       },
     });
 
-    // Show welcome modal on first install
-    const data = (await this.loadData()) as Record<string, unknown> | null;
-    if (!data?.hasSeenWelcome) {
+    // Show welcome modal on first install, AND drop a getting-started note
+    // into the vault so the new user has a persistent, openable reference
+    // (the modal closes; the note stays).
+    if (!freshData?.hasSeenWelcome) {
+      await this.createGettingStartedNote();
       new WelcomeModal(this.app, this).open();
+    }
+  }
+
+  // Write `Welcome to ogstack.md` at the vault root the first time the plugin
+  // loads. Idempotent — if the file already exists (re-installed, user kept
+  // their old vault) we don't overwrite their copy. After write, opens the
+  // note in the active leaf so the user immediately sees something useful.
+  private async createGettingStartedNote(): Promise<void> {
+    const fileName = "Welcome to ogstack.md";
+    const exists = await this.app.vault.adapter.exists(fileName);
+    if (exists) return;
+    try {
+      await this.app.vault.create(fileName, GETTING_STARTED_NOTE);
+      const file = this.app.vault.getAbstractFileByPath(fileName);
+      if (file && "extension" in file) {
+        await this.app.workspace.getLeaf(false).openFile(file as import("obsidian").TFile);
+      }
+    } catch {
+      // If creation fails (read-only vault, name collision via race, …) we
+      // skip silently — the welcome modal still surfaces the same info.
+    }
+  }
+
+  private async fetchAndWriteGstackSkills(existingData: Record<string, unknown> | null): Promise<void> {
+    const OWNER = "garrytan";
+    const REPO = "gstack";
+    const BRANCH = "main";
+    const RESERVED = new Set(["research", "plan", "campaign", "outline", "review"]);
+    const base = `${CUSTOM_SKILLS_FOLDER}/gstack`;
+
+    try {
+      // Fetch repo tree
+      const treeRes = await requestUrl({
+        url: `https://api.github.com/repos/${OWNER}/${REPO}/git/trees/${BRANCH}?recursive=1`,
+        headers: { "User-Agent": "ogstack-plugin", "Accept": "application/vnd.github.v3+json" },
+      });
+      const tree = treeRes.json as { tree?: Array<{ type: string; path: string }> };
+      if (!tree.tree) return;
+
+      const skillPaths = tree.tree.filter(
+        (e) =>
+          e.type === "blob" &&
+          e.path.endsWith("/SKILL.md") &&
+          !e.path.startsWith("test/") &&
+          e.path !== "SKILL.md"
+      ).map((e) => e.path);
+
+      if (!await this.app.vault.adapter.exists(base)) {
+        try { await this.app.vault.adapter.mkdir(base); } catch { /* concurrent */ }
+      }
+
+      let written = 0;
+      // Fetch in serial to be polite; background so startup isn't delayed.
+      for (const p of skillPaths) {
+        try {
+          const res = await requestUrl({
+            url: `https://raw.githubusercontent.com/${OWNER}/${REPO}/${BRANCH}/${p}`,
+          });
+          const content = res.text;
+          const nameMatch = content.match(/^---\r?\n[\s\S]*?^name:\s*(.+?)\s*$/m);
+          if (!nameMatch) continue;
+          const name = nameMatch[1].trim();
+          if (RESERVED.has(name)) continue;
+          if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,39}$/.test(name)) continue;
+
+          const dir = `${base}/${name}`;
+          if (!await this.app.vault.adapter.exists(dir)) {
+            try { await this.app.vault.adapter.mkdir(dir); } catch { /* concurrent */ }
+          }
+          const file = `${dir}/SKILL.md`;
+          if (!await this.app.vault.adapter.exists(file)) {
+            await this.app.vault.adapter.write(file, content);
+            written++;
+          }
+        } catch {
+          // skip individual skill fetch failures
+        }
+      }
+
+      await this.saveData({ ...existingData, gstackSkillsWritten: true });
+      if (written > 0) {
+        this.skillLoader?.loadAll();
+        new Notice(`ogstack: ${written} gstack skills installed to _agent/gstack/`);
+      }
+    } catch {
+      // Network unavailable — silently skip. Will retry on next install.
     }
   }
 
