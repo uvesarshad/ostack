@@ -1,22 +1,60 @@
 # ogstack
 
-Vault-aware skill system for Obsidian. Bring [gstack](https://github.com/garrytan/gstack) skills inside your vault — your linked notes become the context automatically.
+Use AI skills directly in Obsidian — brainstorm ideas, build plans, do market research, write content, and more. Your linked notes become the context automatically.
 
 Built by [Uves Arshad](https://x.com/uvesarshad) · [X](https://x.com/uvesarshad) · [LinkedIn](https://linkedin.com/in/uvesarshad)
 
 ---
 
-## The story
+## Screenshots
 
-I posted about wanting to integrate gstack into Obsidian — using it for brainstorming sessions, research, and writing, all powered by my own vault as context. [Garry Tan](https://x.com/garrytan) liked the idea and reposted it.
+<p>
+  <img src="public/ogstack-screenshot-1.jpg" width="33%">
+  <img src="public/ogstack-screenshot-2.jpg" width="33%">
+  <img src="public/ogstack-screenshot-3.jpg" width="33%">
+</p>
 
-> 📣 **[See the original tweet →](https://x.com/uvesarshad/status/2054417498796376252?s=20)**
-
-So I built and shipped v1 in the next 24 hours.
+<p>
+  <img src="public/ogstack-screenshot-4.jpg" width="49%">
+  <img src="public/ogstack-screenshot-5.jpg" width="49%">
+</p>
 
 ---
 
-## Inspired by gstack
+## The story
+
+I wanted to use gstack and other AI skills for brainstorming sessions, research, and writing directly inside Obsidian. The problem: skills only worked in the CLI or inside an IDE — not in a note-taking app where the thinking actually happens.
+
+I posted about it to see if others felt the same way.
+
+<p>
+  <img src="public/original-tweet-x-post-by-uves-arshad-about-gstack.jpg" width="45%" alt="Original tweet">
+  <img src="public/garry-tan-repost.jpg" width="45%" alt="Garry Tan repost">
+</p>
+
+So I built and shipped v1 in the next 48 hours.
+
+---
+
+## Roadmap
+
+- [x] Skills system with all built-in gstack skills
+- [x] Custom skills — drop a `SKILL.md` in your vault, get a command
+- [x] Multi-provider support — Claude, OpenAI, Gemini, Grok, Ollama
+- [x] CLI provider access — run via Claude Code, Codex, or Gemini CLI subscription
+- [x] Agent skills with vault read/write tools
+- [x] Interactive skills with `<ASK>` protocol
+- [x] Import skills from GitHub or local disk
+- [x] Floating bar + sidebar chat surfaces
+- [x] Published to Obsidian community plugins
+- [ ] Plugin name finalisation
+- [ ] Mobile support (iOS & Android)
+- [ ] Skill marketplace / community hub
+- [ ] Voice input
+
+---
+
+## What is gstack
 
 [gstack](https://github.com/garrytan/gstack) is an open-source project by [Garry Tan](https://github.com/garrytan) — 23+ specialist AI skills for developer workflows, defined as simple `SKILL.md` files and run from the command line via Claude Code.
 
@@ -47,23 +85,17 @@ No copy-paste. No context switching. The AI already knows what you know.
 
 ---
 
-## Does this require the gstack CLI?
-
-**No.** ogstack is fully standalone. You do not need to install the gstack CLI or Claude Code. Everything runs inside Obsidian using direct API calls to your chosen LLM provider.
-
-The plugin borrows gstack's `SKILL.md` format but executes it entirely through Obsidian's native APIs.
-
----
-
 ## How the models work
 
 ogstack uses a **two-model pipeline** on every skill run.
 
 ### Main model
 
-The main model is your primary LLM — Claude, GPT-4o, Gemini, or a local Ollama model. It receives the full assembled vault context and your skill's system prompt, then streams the response directly into your note. You configure which model in Settings → ogstack → Provider.
+The main model is your primary LLM — Claude, GPT-4o, Gemini, a local Ollama model, or a CLI subscription (Claude Code, Codex, Gemini CLI). It receives the full assembled vault context and your skill's system prompt, then streams the response directly into your note.
 
-Claude, OpenAI, Gemini, Grok, and Ollama all stream token-by-token so output appears in real time. CLI providers (`claude-cli`, `codex-cli`, `gemini-cli`) stream from the subprocess's stdout.
+API providers (Claude, OpenAI, Gemini, Grok, Ollama) stream token-by-token so output appears in real time. CLI providers (`claude-cli`, `codex-cli`, `gemini-cli`) spawn a subprocess and stream from stdout — useful if you already have a Claude Code or Codex subscription and don't want to manage API keys separately.
+
+You configure which model in Settings → ogstack → Provider.
 
 ### Context Scout
 
@@ -128,16 +160,22 @@ flowchart TD
 
 ## Install
 
-### Via BRAT (recommended for now)
+### Option 1: Community Plugin (recommended)
 
-1. Install [BRAT](https://github.com/TfTHacker/obsidian42-brat) from the Obsidian community plugins
-2. In BRAT settings → Add Beta Plugin → paste this repo's URL
+1. Open Obsidian → Settings → Community plugins → Browse
+2. Search for **ogstack**
+3. Click Install, then Enable
+
+### Option 2: Via BRAT (beta)
+
+1. Install [BRAT](https://github.com/TfTHacker/obsidian42-brat) from the community plugins
+2. In BRAT settings → Add Beta Plugin → paste `https://github.com/uvesarshad/ostack`
 3. Enable **ogstack** in Settings → Community Plugins
 
-### Manual
+### Option 3: Manual install
 
 1. Download `main.js`, `manifest.json`, `styles.css` from the latest [GitHub Release](../../releases)
-2. Copy to `.obsidian/plugins/ogstack/` in your vault
+2. Copy them into `.obsidian/plugins/ogstack/` in your vault (create the folder if it doesn't exist)
 3. Enable the plugin in Settings → Community Plugins
 
 ---
@@ -145,8 +183,8 @@ flowchart TD
 ## Setup
 
 1. Go to **Settings → ogstack**
-2. Choose your AI provider (Claude, OpenAI, Gemini, or Ollama)
-3. Paste your API key
+2. Choose your AI provider (Claude, OpenAI, Gemini, Grok, Ollama, or a CLI subscription)
+3. Paste your API key (or set the CLI binary path for CLI providers)
 4. Open a note with linked notes and run `gs: Research`
 
 Supported providers:
@@ -156,7 +194,11 @@ Supported providers:
 | Claude | claude-sonnet-4-6 | Yes — [anthropic.com/api](https://anthropic.com/api) |
 | OpenAI | gpt-4o | Yes — [platform.openai.com/api-keys](https://platform.openai.com/api-keys) |
 | Gemini | gemini-2.0-flash | Yes — [aistudio.google.com](https://aistudio.google.com) |
+| Grok (xAI) | grok-2 | Yes — [console.x.ai](https://console.x.ai) |
 | Ollama | llama3.2 | No — runs locally |
+| Claude CLI | (via claude-code) | No — uses your Claude Code subscription |
+| Codex CLI | (via codex) | No — uses your OpenAI subscription |
+| Gemini CLI | (via gemini) | No — uses your Google subscription |
 
 > **Security notice:** API keys are stored in plaintext at `.obsidian/plugins/ogstack/data.json` inside your vault. Obsidian Sync excludes plugin data by default, but third-party sync (Git, Dropbox, iCloud, etc.) will carry the key — exclude this file if you share the vault.
 >

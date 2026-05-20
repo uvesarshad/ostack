@@ -63,10 +63,10 @@ for everyone.
 
 Pre-submission checklist (Obsidian's [plugin guidelines](https://docs.obsidian.md/Plugins/Releasing/Submission+requirements+for+plugins)):
 
-- [ ] `manifest.json` `id` doesn't include "obsidian" or "plugin"
-- [ ] No mobile-incompatible features OR `isDesktopOnly: true` is set (✓ we set it)
-- [ ] No telemetry / analytics
-- [ ] No automatic updates outside Obsidian's mechanism
-- [ ] No bundled fonts / theme overrides
-- [ ] `funding_url` field added to manifest if accepting support
-- [ ] README has a clear screenshot or GIF (add one before submitting)
+- [x] `manifest.json` `id` doesn't include "obsidian" or "plugin"
+- [x] No mobile-incompatible features OR `isDesktopOnly: true` is set (✓ we set it)
+- [x] No telemetry / analytics
+- [x] No automatic updates outside Obsidian's mechanism
+- [x] No bundled fonts / theme overrides
+- [x] `funding_url` field added to manifest if accepting support
+- [x] README has a clear screenshot or GIF (add one before submitting)
