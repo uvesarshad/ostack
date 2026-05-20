@@ -1710,7 +1710,7 @@ RIGHT (renders as buttons):
 - Set "allowOther": false only when "Other" makes no sense (e.g. yes/no). "Other" is on by default.
 - If you have enough context to proceed, don't ask anything \u2014 just answer.
 `;
-var _BarChat = class _BarChat extends import_obsidian3.Component {
+var BarChat = class extends import_obsidian3.Component {
   constructor(config) {
     var _a;
     super();
@@ -1910,42 +1910,34 @@ var _BarChat = class _BarChat extends import_obsidian3.Component {
     this.resizeObserver.observe(this.card);
   }
   persistGeometry() {
-    try {
-      const rect = this.container.getBoundingClientRect();
-      const cardRect = this.card.getBoundingClientRect();
-      const geom = {
-        left: rect.left,
-        top: rect.top,
-        width: cardRect.width,
-        height: cardRect.height,
-        // viewport — so we can re-center sensibly if the user resized the
-        // window since the last save and the old coordinates are off-screen.
-        vw: window.innerWidth,
-        vh: window.innerHeight
-      };
-      localStorage.setItem(_BarChat.GEOMETRY_STORAGE_KEY, JSON.stringify(geom));
-    } catch (e) {
-    }
+    var _a, _b;
+    const rect = this.container.getBoundingClientRect();
+    const cardRect = this.card.getBoundingClientRect();
+    const geom = {
+      left: rect.left,
+      top: rect.top,
+      width: cardRect.width,
+      height: cardRect.height,
+      vw: window.innerWidth,
+      vh: window.innerHeight
+    };
+    (_b = (_a = this.config).onSaveGeometry) == null ? void 0 : _b.call(_a, geom);
   }
   restoreGeometry() {
-    try {
-      const raw = localStorage.getItem(_BarChat.GEOMETRY_STORAGE_KEY);
-      if (!raw)
-        return;
-      const geom = JSON.parse(raw);
-      const offTop = geom.top < 0 || geom.top > window.innerHeight - 40;
-      const offLeft = geom.left + 60 > window.innerWidth || geom.left + geom.width < 60;
-      if (!offTop && !offLeft) {
-        this.container.style.left = `${geom.left}px`;
-        this.container.style.top = `${geom.top}px`;
-        this.container.style.bottom = "auto";
-        this.container.style.transform = "none";
-      }
-      if (geom.width > 200 && geom.height > 120) {
-        this.card.style.width = `${geom.width}px`;
-        this.card.style.height = `${geom.height}px`;
-      }
-    } catch (e) {
+    const geom = this.config.initialGeometry;
+    if (!geom)
+      return;
+    const offTop = geom.top < 0 || geom.top > window.innerHeight - 40;
+    const offLeft = geom.left + 60 > window.innerWidth || geom.left + geom.width < 60;
+    if (!offTop && !offLeft) {
+      this.container.style.left = `${geom.left}px`;
+      this.container.style.top = `${geom.top}px`;
+      this.container.style.bottom = "auto";
+      this.container.style.transform = "none";
+    }
+    if (geom.width > 200 && geom.height > 120) {
+      this.card.style.width = `${geom.width}px`;
+      this.card.style.height = `${geom.height}px`;
     }
   }
   // ── ProgressReporter (back-compat) ───────────────────────────────
@@ -2973,8 +2965,6 @@ ${summary}`, timestamp: Date.now() },
     }
   }
 };
-_BarChat.GEOMETRY_STORAGE_KEY = "ogstack:bar:geometry:v1";
-var BarChat = _BarChat;
 function isOtherLikeOption(label) {
   const s = label.trim().toLowerCase();
   if (!s)
@@ -5314,6 +5304,11 @@ var GStackPlugin = class extends import_obsidian12.Plugin {
         } else {
           this.hideStreamingIndicator();
         }
+      },
+      initialGeometry: this.settings.barGeometry,
+      onSaveGeometry: (geom) => {
+        this.settings.barGeometry = geom;
+        void this.saveSettings();
       }
     });
     this.addCommand({

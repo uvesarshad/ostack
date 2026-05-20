@@ -29,6 +29,9 @@ export interface BarChatConfig {
   // If false, the embedded host owns active-leaf tracking (so it can flip
   // sessions on its own). Defaults to true for the floating bar.
   followActiveLeaf?: boolean;
+  // Geometry persistence — uses Obsidian plugin data instead of localStorage.
+  initialGeometry?: GStackSettings["barGeometry"];
+  onSaveGeometry?: (geometry: NonNullable<GStackSettings["barGeometry"]>) => void;
 }
 
 // ── Constants ────────────────────────────────────────────────────────
@@ -252,8 +255,6 @@ export class BarChat extends Component implements ProgressReporter {
 
   private resizeObserver: ResizeObserver | null = null;
   private dragCleanup: (() => void) | null = null;
-  private static readonly GEOMETRY_STORAGE_KEY = "ogstack:bar:geometry:v1";
-
   private installDragHandle(): void {
     // Only the toolbar's empty space is a drag handle — clicks on actual
     // toolbar buttons should not start a drag. We detect this by checking
@@ -336,49 +337,35 @@ export class BarChat extends Component implements ProgressReporter {
   }
 
   private persistGeometry(): void {
-    try {
-      const rect = this.container.getBoundingClientRect();
-      const cardRect = this.card.getBoundingClientRect();
-      const geom = {
-        left: rect.left,
-        top: rect.top,
-        width: cardRect.width,
-        height: cardRect.height,
-        // viewport — so we can re-center sensibly if the user resized the
-        // window since the last save and the old coordinates are off-screen.
-        vw: window.innerWidth,
-        vh: window.innerHeight,
-      };
-      localStorage.setItem(BarChat.GEOMETRY_STORAGE_KEY, JSON.stringify(geom));
-    } catch {
-      // localStorage can throw under sandbox / quota errors — non-fatal.
-    }
+    const rect = this.container.getBoundingClientRect();
+    const cardRect = this.card.getBoundingClientRect();
+    const geom = {
+      left: rect.left,
+      top: rect.top,
+      width: cardRect.width,
+      height: cardRect.height,
+      vw: window.innerWidth,
+      vh: window.innerHeight,
+    };
+    this.config.onSaveGeometry?.(geom);
   }
 
   private restoreGeometry(): void {
-    try {
-      const raw = localStorage.getItem(BarChat.GEOMETRY_STORAGE_KEY);
-      if (!raw) return;
-      const geom = JSON.parse(raw) as {
-        left: number; top: number; width: number; height: number; vw?: number; vh?: number;
-      };
-      // Defensive: if either coordinate would push the bar fully off-screen
-      // (e.g. user switched displays), drop the saved position and let the
-      // default centered layout apply.
-      const offTop = geom.top < 0 || geom.top > window.innerHeight - 40;
-      const offLeft = geom.left + 60 > window.innerWidth || geom.left + geom.width < 60;
-      if (!offTop && !offLeft) {
-        this.container.style.left = `${geom.left}px`;
-        this.container.style.top = `${geom.top}px`;
-        this.container.style.bottom = "auto";
-        this.container.style.transform = "none";
-      }
-      if (geom.width > 200 && geom.height > 120) {
-        this.card.style.width = `${geom.width}px`;
-        this.card.style.height = `${geom.height}px`;
-      }
-    } catch {
-      // ignore parse / quota errors
+    const geom = this.config.initialGeometry;
+    if (!geom) return;
+    // If coordinates would push the bar fully off-screen (e.g. user switched
+    // displays), drop the saved position and let the default centered layout apply.
+    const offTop = geom.top < 0 || geom.top > window.innerHeight - 40;
+    const offLeft = geom.left + 60 > window.innerWidth || geom.left + geom.width < 60;
+    if (!offTop && !offLeft) {
+      this.container.style.left = `${geom.left}px`;
+      this.container.style.top = `${geom.top}px`;
+      this.container.style.bottom = "auto";
+      this.container.style.transform = "none";
+    }
+    if (geom.width > 200 && geom.height > 120) {
+      this.card.style.width = `${geom.width}px`;
+      this.card.style.height = `${geom.height}px`;
     }
   }
 

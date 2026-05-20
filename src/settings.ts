@@ -34,6 +34,8 @@ export interface GStackSettings {
   // tools. Off by default — a prompt-injected agent should not silently overwrite
   // vault files. When off, write tools return an error the agent reports back.
   allowAgentWrites: boolean;
+  // Persisted floating-bar geometry (position + size). Not shown in settings UI.
+  barGeometry?: { left: number; top: number; width: number; height: number; vw?: number; vh?: number };
 }
 
 export const DEFAULT_SETTINGS: GStackSettings = {

@@ -220,8 +220,9 @@
 }
 .gstack-session-del .svg-icon { width: 16px; height: 16px; }
 .gstack-session-item:hover .gstack-session-del { opacity: 0.7; }
+.gstack-session-item:hover .gstack-session-del:hover,
 .gstack-session-del:hover {
-  opacity: 1 !important;
+  opacity: 1;
   background: color-mix(in srgb, var(--text-error) 14%, transparent);
   color: var(--text-error);
 }
@@ -573,7 +574,7 @@
    so motion is 1:1 with the cursor, and switch cursor to grabbing. */
 .gstack-bar2-container.dragging,
 .gstack-bar2-container.dragging .gstack-bar2-card {
-  transition: none !important;
+  transition: none;
 }
 .gstack-bar2-container.dragging .gstack-bar2-toolbar { cursor: grabbing; }
 
@@ -1246,14 +1247,14 @@
 /* ── prefers-reduced-motion: disable animations and transitions ── */
 
 @media (prefers-reduced-motion: reduce) {
-  .gstack-bar2-container,
-  .gstack-bar2-msg-streaming,
-  .gstack-statusbar-streaming .dot,
-  .gstack-fi-spinner,
-  .gstack-chat-suggest,
-  .gstack-bar2-popup,
-  .gstack-bar2-popup-item {
-    animation: none !important;
-    transition: none !important;
+  html .gstack-bar2-container,
+  html .gstack-bar2-msg-streaming,
+  html .gstack-statusbar-streaming .dot,
+  html .gstack-fi-spinner,
+  html .gstack-chat-suggest,
+  html .gstack-bar2-popup,
+  html .gstack-bar2-popup-item {
+    animation: none;
+    transition: none;
   }
 }

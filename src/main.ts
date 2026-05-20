@@ -74,6 +74,11 @@ export default class GStackPlugin extends Plugin {
           this.hideStreamingIndicator();
         }
       },
+      initialGeometry: this.settings.barGeometry,
+      onSaveGeometry: (geom) => {
+        this.settings.barGeometry = geom;
+        void this.saveSettings();
+      },
     });
 
     this.addCommand({
